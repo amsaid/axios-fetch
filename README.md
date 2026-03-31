@@ -13,7 +13,7 @@ A zero-dependency, drop-in replacement for **[Axios](https://github.com/axios/ax
 ## Install
 
 ```bash
-npm install sd-sd-axios-fetch
+npm install sd-axios-fetch
 ```
 
 Or drop the bundled file directly into a `<script>` tag:
