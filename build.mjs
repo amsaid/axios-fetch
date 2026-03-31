@@ -48,7 +48,7 @@ function buildBundle(format) {
 
   if (!isESM) {
     code += `/**
- * sd-axios-fetch v0.0.2
+ * sd-axios-fetch v0.0.3
  * A drop-in replacement for Axios.js built on the Fetch API.
  * (CJS / UMD bundle)  —  ${new Date().toISOString().split('T')[0]}
  */
@@ -69,7 +69,7 @@ function __require(id) {
 `;
   } else {
     code += `/**
- * sd-axios-fetch v0.0.2
+ * sd-axios-fetch v0.0.3
  * A drop-in replacement for Axios.js built on the Fetch API.
  * (ESM bundle)  —  ${new Date().toISOString().split('T')[0]}
  */
