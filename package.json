@@ -1,0 +1,49 @@
+{
+  "name": "axios-fetch",
+  "version": "1.0.0",
+  "description": "A drop-in replacement for Axios.js built entirely on the Fetch API. Full API interoperability with zero Axios dependencies.",
+  "main": "dist/axios-fetch.js",
+  "module": "dist/axios-fetch.mjs",
+  "types": "dist/axios-fetch.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/axios-fetch.mjs",
+      "require": "./dist/axios-fetch.js",
+      "default": "./dist/axios-fetch.js"
+    }
+  },
+  "files": [
+    "dist/",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "node build.mjs",
+    "test": "node test/test.js",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "axios",
+    "fetch",
+    "http",
+    "request",
+    "ajax",
+    "promise",
+    "replacement",
+    "drop-in",
+    "compatibility"
+  ],
+  "author": "",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": ""
+  },
+  "browserslist": [
+    "node >= 14",
+    "chrome >= 62",
+    "firefox >= 60",
+    "safari >= 12",
+    "edge >= 16"
+  ]
+}
