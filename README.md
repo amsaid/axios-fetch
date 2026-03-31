@@ -1,11 +1,11 @@
-# axios-fetch
+# sd-axios-fetch
 
 A zero-dependency, drop-in replacement for **[Axios](https://github.com/axios/axios)** built entirely on the native **Fetch API**. Swap the import and go — no code changes needed.
 
 - **45 KB** single-file bundle (UMD + ESM)
 - **Zero dependencies** — uses only native `fetch`, `AbortController`, `Request`, `Headers`
 - **Full Axios API compatibility** — `get`, `post`, `put`, `patch`, `delete`, `head`, `options`, `create`, interceptors, `CancelToken`, `AbortController`, `axios.all` / `axios.spread`, transforms, timeout, etc.
-- **TypeScript types** included (`dist/axios-fetch.d.ts`)
+- **TypeScript types** included (`dist/sd-axios-fetch.d.ts`)
 - **58 passing interoperability tests** against real APIs
 
 ---
@@ -13,13 +13,13 @@ A zero-dependency, drop-in replacement for **[Axios](https://github.com/axios/ax
 ## Install
 
 ```bash
-npm install axios-fetch
+npm install sd-sd-axios-fetch
 ```
 
 Or drop the bundled file directly into a `<script>` tag:
 
 ```html
-<script src="dist/axios-fetch.js"></script>
+<script src="dist/sd-axios-fetch.js"></script>
 <script>
   axios.get('/api/users').then(res => console.log(res.data));
 </script>
@@ -34,7 +34,7 @@ Or drop the bundled file directly into a `<script>` tag:
 import axios from 'axios';
 
 // After (literally just change the import):
-import axios from 'axios-fetch';
+import axios from 'sd-axios-fetch';
 
 // Everything else stays exactly the same:
 const { data } = await axios.get('/api/users');
@@ -269,7 +269,7 @@ await axios.get('/api/data', { responseType: 'blob' });        // Blob
 ## Build
 
 ```bash
-node build.mjs     # produces dist/axios-fetch.js + dist/axios-fetch.mjs
+node build.mjs     # produces dist/sd-axios-fetch.js + dist/sd-axios-fetch.mjs
 npm test           # runs 58 interoperability tests
 ```
 

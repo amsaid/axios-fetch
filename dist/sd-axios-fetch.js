@@ -1,12 +1,24 @@
 /**
- * axios-fetch v1.0.0
+ * sd-axios-fetch v0.0.2
  * A drop-in replacement for Axios.js built on the Fetch API.
- * (ESM bundle)  —  2026-03-31
+ * (CJS / UMD bundle)  —  2026-03-31
  */
+'use strict';
 
+// ── Module registry ────────────────────────────────────────────────
 const __modules = {};
+const __cache = {};
+
+function __require(id) {
+  if (__cache[id]) return __cache[id].exports;
+  const mod = { exports: {} };
+  __cache[id] = mod;
+  __modules[id](mod, mod.exports, __require);
+  return mod.exports;
+}
+
 // ── src/helpers/utils.js ───────────────────────────────────────────
-__modules["src/helpers/utils.js"] = function (require, module, exports) {
+__modules["src/helpers/utils.js"] = function (module, exports, require) {
 /**
  * Utility helpers used throughout the library.
  * Extracted so every module imports from a single source of truth.
@@ -133,10 +145,11 @@ module.exports = {
   deepMerge,
   stripUndefinedKeys,
 };
+
 };
 
 // ── src/core/AxiosError.js ───────────────────────────────────────────
-__modules["src/core/AxiosError.js"] = function (require, module, exports) {
+__modules["src/core/AxiosError.js"] = function (module, exports, require) {
 /**
  * AxiosError - Drop-in compatible error class matching Axios error structure
  */
@@ -264,10 +277,11 @@ class AxiosError extends Error {
 }
 
 module.exports = AxiosError;
+
 };
 
 // ── src/core/CanceledError.js ───────────────────────────────────────────
-__modules["src/core/CanceledError.js"] = function (require, module, exports) {
+__modules["src/core/CanceledError.js"] = function (module, exports, require) {
 /**
  * CanceledError - Dedicated class for aborted / cancelled requests.
  *
@@ -291,10 +305,11 @@ class CanceledError extends AxiosError {
 }
 
 module.exports = CanceledError;
+
 };
 
 // ── src/core/CancelToken.js ───────────────────────────────────────────
-__modules["src/core/CancelToken.js"] = function (require, module, exports) {
+__modules["src/core/CancelToken.js"] = function (module, exports, require) {
 /**
  * CancelToken - Imperative cancellation token (Axios pre-v0.22 API).
  *
@@ -382,10 +397,11 @@ class CancelToken {
 }
 
 module.exports = CancelToken;
+
 };
 
 // ── src/core/InterceptorManager.js ───────────────────────────────────────────
-__modules["src/core/InterceptorManager.js"] = function (require, module, exports) {
+__modules["src/core/InterceptorManager.js"] = function (module, exports, require) {
 /**
  * InterceptorManager - Manages request & response interceptor stacks.
  *
@@ -447,10 +463,11 @@ class InterceptorManager {
 }
 
 module.exports = InterceptorManager;
+
 };
 
 // ── src/core/buildURL.js ───────────────────────────────────────────
-__modules["src/core/buildURL.js"] = function (require, module, exports) {
+__modules["src/core/buildURL.js"] = function (module, exports, require) {
 /**
  * URL & query-string utilities.
  *
@@ -572,10 +589,11 @@ module.exports = {
   isURLSameOrigin,
   parseProtocol,
 };
+
 };
 
 // ── src/core/transformData.js ───────────────────────────────────────────
-__modules["src/core/transformData.js"] = function (require, module, exports) {
+__modules["src/core/transformData.js"] = function (module, exports, require) {
 /**
  * transformData - Apply transformRequest / transformResponse chains.
  *
@@ -600,10 +618,11 @@ function transformData(data, transformers, headers) {
 }
 
 module.exports = transformData;
+
 };
 
 // ── src/core/mergeConfig.js ───────────────────────────────────────────
-__modules["src/core/mergeConfig.js"] = function (require, module, exports) {
+__modules["src/core/mergeConfig.js"] = function (module, exports, require) {
 /**
  * mergeConfig - Deep-merge Axios request configs.
  *
@@ -779,10 +798,11 @@ function isHttpMethod(key) {
 mergeConfig.DEFAULTS = DEFAULTS;
 
 module.exports = mergeConfig;
+
 };
 
 // ── src/core/settle.js ───────────────────────────────────────────
-__modules["src/core/settle.js"] = function (require, module, exports) {
+__modules["src/core/settle.js"] = function (module, exports, require) {
 /**
  * settle - Resolve or reject a promise based on validateStatus.
  *
@@ -816,10 +836,11 @@ function settle(resolve, reject, response, config) {
 }
 
 module.exports = settle;
+
 };
 
 // ── src/adapters/fetch.js ───────────────────────────────────────────
-__modules["src/adapters/fetch.js"] = function (require, module, exports) {
+__modules["src/adapters/fetch.js"] = function (module, exports, require) {
 /**
  * Fetch Adapter — the bridge between Axios config objects and native fetch().
  *
@@ -1173,10 +1194,11 @@ function normalizeHeadersForFetch(headers) {
   }
   return out;
 }
+
 };
 
 // ── src/Axios.js ───────────────────────────────────────────
-__modules["src/Axios.js"] = function (require, module, exports) {
+__modules["src/Axios.js"] = function (module, exports, require) {
 /**
  * Axios — drop-in replacement class.
  *
@@ -1414,61 +1436,68 @@ Axios.prototype.getUri = function getUri(config) {
 // ── Exports ──────────────────────────────────────────────────────
 
 module.exports = Axios;
+
 };
 
 // ── src/index.js ───────────────────────────────────────────
-__modules["src/index.js"] = function (require, module, exports) {
+__modules["src/index.js"] = function (module, exports, require) {
 /**
- * axios-fetch — entry point.
+ * sd-axios-fetch — entry point.
  *
- * `require('axios-fetch')` (or the bundled dist file) returns the
+ * `require('sd-axios-fetch')` (or the bundled dist file) returns the
  * default Axios instance plus a few statics — exactly matching the
  * shape you get from `import axios from 'axios'`.
  *
- *   const axios = require('axios-fetch');
+ *   const axios = require('sd-axios-fetch');
  *   // OR
- *   import axios from 'axios-fetch';
+ *   import axios from 'sd-axios-fetch';
  *
  *   axios.get(url).then(res => res.data);
  *   const inst = axios.create({ baseURL: 'https://api.example.com' });
  *   inst.post('/users', { name: 'Z' });
  */
-const Axios         = require("src/Axios.js");
-const AxiosError    = require("src/core/AxiosError.js");
+const Axios = require("src/Axios.js");
+const AxiosError = require("src/core/AxiosError.js");
 const CanceledError = require("src/core/CanceledError.js");
-const CancelToken   = require("src/core/CancelToken.js");
-const mergeConfig   = require("src/core/mergeConfig.js");
+const CancelToken = require("src/core/CancelToken.js");
+const mergeConfig = require("src/core/mergeConfig.js");
 
 // Create the default instance
 const axios = Axios.create(mergeConfig.DEFAULTS);
 
 // ── Statics & named exports ─────────────────────────────────────
 // Attach everything that the official axios package exposes so that
-// `import axios from 'axios-fetch'` is a true drop-in.
+// `import axios from 'sd-axios-fetch'` is a true drop-in.
 
-axios.Axios         = Axios;
-axios.AxiosError    = AxiosError;
+axios.Axios = Axios;
+axios.AxiosError = AxiosError;
 axios.CanceledError = CanceledError;
-axios.CancelToken   = CancelToken;
-axios.default       = axios;          // ESM default export compat
-axios.mergeConfig   = mergeConfig;
-axios.create        = Axios.create;  // factory for new instances
-axios.isCancel      = AxiosError.isCancel;
-axios.isAxiosError  = AxiosError.isAxiosError;
-axios.all           = Axios.all;
-axios.spread        = Axios.spread;
-axios.toFormData     = Axios.toFormData;
-axios.formToJSON     = Axios.formToJSON;
+axios.CancelToken = CancelToken;
+axios.default = axios;          // ESM default export compat
+axios.mergeConfig = mergeConfig;
+axios.create = Axios.create;  // factory for new instances
+axios.isCancel = AxiosError.isCancel;
+axios.isAxiosError = AxiosError.isAxiosError;
+axios.all = Axios.all;
+axios.spread = Axios.spread;
+axios.toFormData = Axios.toFormData;
+axios.formToJSON = Axios.formToJSON;
 
 module.exports = axios;
+
 };
 
-function __require(id) {
-  const mod = { exports: {} };
-  __modules[id](__require, mod, mod.exports);
-  return mod.exports;
-}
+// ── Bootstrap ────────────────────────────────────────────
+const __axios = __require("src/index.js");
 
-const __entry = __require("src/index.js");
-export default __entry;
-export const { Axios, AxiosError, CanceledError, CancelToken, mergeConfig, all, spread, isCancel, isAxiosError, toFormData, formToJSON } = __entry;
+(function (root, factory) {
+  if (typeof define === 'function' && define.amd) {
+    define([], factory);
+  } else if (typeof module === 'object' && module.exports) {
+    module.exports = factory();
+  } else {
+    root.axios = factory();
+  }
+})(typeof self !== 'undefined' ? self : this, function () {
+  return __axios;
+});

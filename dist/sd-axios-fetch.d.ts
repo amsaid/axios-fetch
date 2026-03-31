@@ -1,8 +1,8 @@
 /**
- * TypeScript declaration file for axios-fetch.
+ * TypeScript declaration file for sd-axios-fetch.
  *
  * Mirrors the Axios type definitions so any project using `import axios from 'axios'`
- * can swap to `import axios from 'axios-fetch'` without type errors.
+ * can swap to `import axios from 'sd-axios-fetch'` without type errors.
  */
 export = axios;
 
@@ -163,7 +163,7 @@ declare namespace axios {
     static isAxiosError(payload: any): boolean;
   }
 
-  export class CanceledError extends AxiosError {}
+  export class CanceledError extends AxiosError { }
 
   // ── Interceptor ────────────────────────────────────────────────
 

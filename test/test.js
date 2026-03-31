@@ -1,5 +1,5 @@
 /**
- * Comprehensive test suite for axios-fetch.
+ * Comprehensive test suite for sd-axios-fetch.
  *
  * Demonstrates full interoperability with Axios API by testing:
  *   1. Basic HTTP methods (GET, POST, PUT, PATCH, DELETE, HEAD, OPTIONS)
@@ -23,7 +23,7 @@
 'use strict';
 
 const path = require('path');
-const axios = require(path.resolve(__dirname, '..', 'dist', 'axios-fetch.js'));
+const axios = require(path.resolve(__dirname, '..', 'dist', 'sd-axios-fetch.js'));
 
 // ── Minimal test harness ──────────────────────────────────────────
 
@@ -67,7 +67,7 @@ function assertIncludes(obj, key, label) {
 const API = 'https://jsonplaceholder.typicode.com';
 
 async function run() {
-  console.log('\naxios-fetch — Interoperability Test Suite\n');
+  console.log('\nsd-axios-fetch — Interoperability Test Suite\n');
 
   // ═══════════════════════════════════════════════════════════════
   // 1. API surface & statics
@@ -775,7 +775,7 @@ async function run() {
     const inst = axios.create({
       baseURL: API,
       timeout: 10000,
-      headers: { 'X-App': 'axios-fetch-test' },
+      headers: { 'X-App': 'sd-axios-fetch-test' },
     });
 
     let reqCount = 0;

@@ -1,6 +1,6 @@
 /**
- * Build script — bundles the library into dist/axios-fetch.js (CJS/UMD)
- * and dist/axios-fetch.mjs (ESM).
+ * Build script — bundles the library into dist/sd-axios-fetch.js (CJS/UMD)
+ * and dist/sd-axios-fetch.mjs (ESM).
  *
  * Run:  node build.mjs
  */
@@ -48,7 +48,7 @@ function buildBundle(format) {
 
   if (!isESM) {
     code += `/**
- * axios-fetch v1.0.0
+ * sd-axios-fetch v0.0.2
  * A drop-in replacement for Axios.js built on the Fetch API.
  * (CJS / UMD bundle)  —  ${new Date().toISOString().split('T')[0]}
  */
@@ -69,7 +69,7 @@ function __require(id) {
 `;
   } else {
     code += `/**
- * axios-fetch v1.0.0
+ * sd-axios-fetch v0.0.2
  * A drop-in replacement for Axios.js built on the Fetch API.
  * (ESM bundle)  —  ${new Date().toISOString().split('T')[0]}
  */
@@ -183,9 +183,9 @@ function resolveModulePath(rel, fromFile) {
 // ── Write bundles ──────────────────────────────────────────────────
 
 const cjsBundle = buildBundle('cjs');
-writeFileSync(join(root, 'dist', 'axios-fetch.js'), cjsBundle, 'utf-8');
-console.log('✓  dist/axios-fetch.js  (CJS/UMD)  — ' + (Buffer.byteLength(cjsBundle) / 1024).toFixed(1) + ' KB');
+writeFileSync(join(root, 'dist', 'sd-axios-fetch.js'), cjsBundle, 'utf-8');
+console.log('✓  dist/sd-axios-fetch.js  (CJS/UMD)  — ' + (Buffer.byteLength(cjsBundle) / 1024).toFixed(1) + ' KB');
 
 const esmBundle = buildBundle('esm');
-writeFileSync(join(root, 'dist', 'axios-fetch.mjs'), esmBundle, 'utf-8');
-console.log('✓  dist/axios-fetch.mjs (ESM)      — ' + (Buffer.byteLength(esmBundle) / 1024).toFixed(1) + ' KB');
+writeFileSync(join(root, 'dist', 'sd-axios-fetch.mjs'), esmBundle, 'utf-8');
+console.log('✓  dist/sd-axios-fetch.mjs (ESM)      — ' + (Buffer.byteLength(esmBundle) / 1024).toFixed(1) + ' KB');
