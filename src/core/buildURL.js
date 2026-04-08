@@ -1,7 +1,5 @@
 /**
- * URL & query-string utilities.
- *
- * buildURL, combineURLs, isURLSameOrigin, parseProtocol — all matching
+ * buildURL, combineURLs, isURLSameOrigin — all matching
  * Axios helper behaviour so that interceptors & defaults feel native.
  */
 'use strict';
@@ -84,14 +82,6 @@ function isURLSameOrigin(requestURL) {
   }
 }
 
-/**
- * Return the protocol portion of a URL string (e.g. 'http:').
- */
-function parseProtocol(url) {
-  const match = /^([a-z][a-z\d+\-.]*:)?\/\//i.exec(url);
-  return match ? (match[1] ? match[1].toLowerCase() : 'http:') : 'http:';
-}
-
 // --- internal helpers ---
 
 function encode(str) {
@@ -119,5 +109,4 @@ module.exports = {
   buildURL,
   combineURLs,
   isURLSameOrigin,
-  parseProtocol,
 };

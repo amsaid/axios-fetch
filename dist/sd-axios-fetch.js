@@ -1,7 +1,7 @@
 /**
  * sd-axios-fetch v0.0.3
  * A drop-in replacement for Axios.js built on the Fetch API.
- * (CJS / UMD bundle)  —  2026-03-31
+ * (CJS / UMD bundle)  —  2026-04-08
  */
 'use strict';
 
@@ -469,9 +469,7 @@ module.exports = InterceptorManager;
 // ── src/core/buildURL.js ───────────────────────────────────────────
 __modules["src/core/buildURL.js"] = function (module, exports, require) {
 /**
- * URL & query-string utilities.
- *
- * buildURL, combineURLs, isURLSameOrigin, parseProtocol — all matching
+ * buildURL, combineURLs, isURLSameOrigin — all matching
  * Axios helper behaviour so that interceptors & defaults feel native.
  */
 const { forEach, isURLSearchParams, trim } = require("src/helpers/utils.js");
@@ -552,14 +550,6 @@ function isURLSameOrigin(requestURL) {
   }
 }
 
-/**
- * Return the protocol portion of a URL string (e.g. 'http:').
- */
-function parseProtocol(url) {
-  const match = /^([a-z][a-z\d+\-.]*:)?\/\//i.exec(url);
-  return match ? (match[1] ? match[1].toLowerCase() : 'http:') : 'http:';
-}
-
 // --- internal helpers ---
 
 function encode(str) {
@@ -587,7 +577,6 @@ module.exports = {
   buildURL,
   combineURLs,
   isURLSameOrigin,
-  parseProtocol,
 };
 
 };
@@ -883,6 +872,7 @@ module.exports = function fetchAdapter(config) {
   return new Promise(function dispatchFetchRequest(resolve, reject) {
     let request;
     let signal;
+    let timeoutId;
 
     // ── Build URL ────────────────────────────────────────────────
     let fullPath = buildURL(
@@ -961,11 +951,9 @@ module.exports = function fetchAdapter(config) {
     }
 
     // ── Timeout ──────────────────────────────────────────────────
-    let timeoutId;
     if (config.timeout && config.timeout > 0) {
       timeoutId = setTimeout(function () {
         controller.abort();
-        reject(AxiosError.timeout(config, request));
       }, config.timeout);
     }
 
@@ -1113,17 +1101,11 @@ module.exports = function fetchAdapter(config) {
           return;
         }
 
-        if (err.name === 'AbortError') {
-          // Could be timeout or explicit abort
-          // Check if it was from our timeout handler
-          if (config.timeout && config.timeout > 0) {
-            reject(AxiosError.timeout(config, request));
-          } else if (config.cancelToken) {
-            reject(AxiosError.cancel(
-              config.cancelToken.reason?.message || 'Request aborted',
-              config,
-              request
-            ));
+        if (err.name === 'AbortError' || err.type === 'aborted' || err.code === 'ERR_ABORTED') {
+          const elapsed = Date.now() - startTime;
+          if (config.timeout > 0 && elapsed >= config.timeout - 5) {
+            const message = config.timeoutErrorMessage || `timeout of ${config.timeout}ms exceeded`;
+            reject(new AxiosError(message, 'ECONNABORTED', config, request, null));
           } else {
             reject(AxiosError.cancel('Request aborted', config, request));
           }
