@@ -1,6 +1,6 @@
 {
   "name": "sd-axios-fetch",
-  "version": "0.0.7",
+  "version": "0.0.8",
   "description": "A zero-dependency, drop-in replacement for Axios.js built entirely on the native Fetch API. Full API compatibility with modern web standards.",
   "main": "dist/sd-axios-fetch.js",
   "module": "dist/sd-axios-fetch.mjs",
@@ -30,7 +30,7 @@
     "build": "node build.mjs",
     "test": "node test/test.js",
     "lint": "eslint src/ test/",
-    "version": "node -e \"require('fs').writeFileSync('CHANGELOG.md', '# Changelog\\n\\n## [' + require('./package.json').version + '](https://github.com/your-username/sd-axios-fetch/releases/tag/v' + require('./package.json').version + ') - ' + new Date().toISOString().split('T')[0] + '\\n\\n- See [release notes](https://github.com/your-username/sd-axios-fetch/releases/tag/v' + require('./package.json').version + ')\\n\\n' + (require('fs').existsSync('CHANGELOG.md') ? require('fs').readFileSync('CHANGELOG.md', 'utf-8').replace(/^# Changelog\\n\\n/, '') : ''))\" && git add CHANGELOG.md",
+    "version": "node scripts/version.js",
     "prepublishOnly": "npm run build && npm test"
   },
   "keywords": [
@@ -56,12 +56,12 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/your-username/sd-axios-fetch.git"
+    "url": "git+https://github.com/amsaid/axios-fetch.git"
   },
   "bugs": {
-    "url": "https://github.com/your-username/sd-axios-fetch/issues"
+    "url": "https://github.com/amsaid/axios-fetch/issues"
   },
-  "homepage": "https://github.com/your-username/sd-axios-fetch#readme",
+  "homepage": "https://github.com/amsaid/axios-fetch#readme",
   "engines": {
     "node": ">=14.17",
     "npm": ">=6.0.0"

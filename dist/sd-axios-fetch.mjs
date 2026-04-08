@@ -1,5 +1,5 @@
 /**
- * sd-axios-fetch v0.0.7
+ * sd-axios-fetch v0.0.8
  * A drop-in replacement for Axios.js built on the Fetch API.
  * (ESM bundle)  —  2026-04-08
  */
