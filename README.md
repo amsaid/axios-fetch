@@ -1,5 +1,7 @@
 # sd-axios-fetch
 
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/amsaid/axios-fetch)
+
 A zero-dependency, drop-in replacement for **[Axios](https://github.com/axios/axios)** built entirely on the native **Fetch API**. Swap the import and go — no code changes needed.
 
 - **45 KB** single-file bundle (UMD + ESM)

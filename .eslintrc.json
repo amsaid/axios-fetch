@@ -1,0 +1,53 @@
+{
+  "root": true,
+  "env": {
+    "es2020": true,
+    "node": true,
+    "browser": true
+  },
+  "extends": "eslint:recommended",
+  "parserOptions": {
+    "ecmaVersion": 2020
+  },
+  "globals": {
+    "fetch": "readonly",
+    "Request": "readonly",
+    "Response": "readonly",
+    "Headers": "readonly",
+    "AbortController": "readonly",
+    "AbortSignal": "readonly",
+    "ReadableStream": "readonly",
+    "TextEncoder": "readonly",
+    "TextDecoder": "readonly",
+    "FormData": "readonly",
+    "Blob": "readonly",
+    "File": "readonly",
+    "URLSearchParams": "readonly",
+    "location": "readonly",
+    "document": "readonly",
+    "window": "readonly",
+    "Buffer": "readonly",
+    "btoa": "readonly",
+    "atob": "readonly",
+    "define": "readonly"
+  },
+  "rules": {
+    "no-unused-vars": ["error", { "argsIgnorePattern": "^_" }],
+    "no-console": "off",
+    "strict": ["error", "global"],
+    "eqeqeq": ["error", "always", { "null": "ignore" }],
+    "no-var": "off",
+    "prefer-const": "off",
+    "indent": ["error", 2, { "SwitchCase": 1 }],
+    "quotes": ["error", "single", { "avoidEscape": true }],
+    "semi": ["error", "always"],
+    "comma-dangle": ["error", "always-multiline"],
+    "no-trailing-spaces": "error",
+    "eol-last": ["error", "always"]
+  },
+  "ignorePatterns": [
+    "dist/",
+    "node_modules/",
+    "build.mjs"
+  ]
+}
