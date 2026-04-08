@@ -1,37 +1,56 @@
 {
   "name": "sd-axios-fetch",
-  "version": "0.0.6",
-  "description": "A drop-in replacement for Axios.js built entirely on the Fetch API. Full API interoperability with zero Axios dependencies.",
+  "version": "0.0.7",
+  "description": "A zero-dependency, drop-in replacement for Axios.js built entirely on the native Fetch API. Full API compatibility with modern web standards.",
   "main": "dist/sd-axios-fetch.js",
   "module": "dist/sd-axios-fetch.mjs",
   "types": "dist/sd-axios-fetch.d.ts",
   "exports": {
     ".": {
-      "import": "./dist/sd-axios-fetch.mjs",
-      "require": "./dist/sd-axios-fetch.js",
+      "import": {
+        "types": "./dist/sd-axios-fetch.d.ts",
+        "default": "./dist/sd-axios-fetch.mjs"
+      },
+      "require": {
+        "types": "./dist/sd-axios-fetch.d.ts",
+        "default": "./dist/sd-axios-fetch.js"
+      },
       "default": "./dist/sd-axios-fetch.js"
-    }
+    },
+    "./package.json": "./package.json"
   },
+  "sideEffects": false,
   "files": [
     "dist/",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "CHANGELOG.md"
   ],
   "scripts": {
     "build": "node build.mjs",
     "test": "node test/test.js",
-    "prepublishOnly": "npm run build"
+    "lint": "eslint src/ test/",
+    "version": "node -e \"require('fs').writeFileSync('CHANGELOG.md', '# Changelog\\n\\n## [' + require('./package.json').version + '](https://github.com/your-username/sd-axios-fetch/releases/tag/v' + require('./package.json').version + ') - ' + new Date().toISOString().split('T')[0] + '\\n\\n- See [release notes](https://github.com/your-username/sd-axios-fetch/releases/tag/v' + require('./package.json').version + ')\\n\\n' + (require('fs').existsSync('CHANGELOG.md') ? require('fs').readFileSync('CHANGELOG.md', 'utf-8').replace(/^# Changelog\\n\\n/, '') : ''))\" && git add CHANGELOG.md",
+    "prepublishOnly": "npm run build && npm test"
   },
   "keywords": [
     "axios",
     "fetch",
     "http",
+    "https",
     "request",
     "ajax",
     "promise",
+    "api",
+    "rest",
     "replacement",
     "drop-in",
-    "compatibility"
+    "compatibility",
+    "zero-dependency",
+    "typescript",
+    "isomorphic",
+    "browser",
+    "node"
   ],
   "author": "",
   "license": "MIT",
@@ -39,8 +58,15 @@
     "type": "git",
     "url": "git+https://github.com/your-username/sd-axios-fetch.git"
   },
+  "bugs": {
+    "url": "https://github.com/your-username/sd-axios-fetch/issues"
+  },
+  "homepage": "https://github.com/your-username/sd-axios-fetch#readme",
+  "engines": {
+    "node": ">=14.17",
+    "npm": ">=6.0.0"
+  },
   "browserslist": [
-    "node >= 14",
     "chrome >= 62",
     "firefox >= 60",
     "safari >= 12",

@@ -62,17 +62,56 @@ module.exports = function fetchAdapter(config) {
     let signal;
     let timeoutId;
 
-    // ── Build URL ────────────────────────────────────────────────
-    let fullPath = buildURL(
-      config.baseURL ? combineURLs(config.baseURL, config.url) : config.url,
-      config.params,
-      config.paramsSerializer
-    );
-
-    if (!fullPath) {
-      reject(AxiosError.badConfig('"url" is required', config));
+    // ── Input validation & security ──────────────────────────────
+    // Validate URL to prevent injection attacks
+    const rawUrl = config.baseURL ? combineURLs(config.baseURL, config.url) : config.url;
+    if (!rawUrl || typeof rawUrl !== 'string') {
+      reject(AxiosError.badConfig('"url" must be a non-empty string', config));
       return;
     }
+
+    // Reject URLs with dangerous protocols
+    try {
+      const parsed = new URL(rawUrl, 'http://base');
+      const protocol = parsed.protocol.toLowerCase();
+      if (!['http:', 'https:', 'data:', 'blob:'].includes(protocol)) {
+        reject(AxiosError.badConfig(`Unsupported protocol: ${protocol}`, config));
+        return;
+      }
+    } catch (e) {
+      // If URL parsing fails, continue and let fetch() handle it
+    }
+
+    // Validate timeout is a positive number
+    if (config.timeout !== undefined && (typeof config.timeout !== 'number' || config.timeout < 0)) {
+      reject(AxiosError.badConfig('"timeout" must be a non-negative number', config));
+      return;
+    }
+
+    // Validate responseType
+    const VALID_RESPONSE_TYPES = ['arraybuffer', 'blob', 'document', 'json', 'text', 'stream', 'formData', ''];
+    if (config.responseType !== undefined && !VALID_RESPONSE_TYPES.includes(config.responseType)) {
+      reject(AxiosError.badConfig(`Invalid responseType: ${config.responseType}`, config));
+      return;
+    }
+
+    // Sanitize headers - reject headers with invalid characters
+    if (config.headers) {
+      const HEADER_NAME_REGEX = /^[\^_`a-zA-Z\-0-9!#$%&'*+|~]+$/;
+      for (const [key, val] of Object.entries(flattenHeaders(config.headers, config.method))) {
+        if (!HEADER_NAME_REGEX.test(key)) {
+          reject(AxiosError.badConfig(`Invalid header name: ${key}`, config));
+          return;
+        }
+        if (typeof val === 'string' && /[\r\n]/.test(val)) {
+          reject(AxiosError.badConfig(`Invalid header value for ${key}: contains CR/LF`, config));
+          return;
+        }
+      }
+    }
+
+    // ── Build URL ────────────────────────────────────────────────
+    let fullPath = buildURL(rawUrl, config.params, config.paramsSerializer);
 
     // ── Headers ──────────────────────────────────────────────────
     // Flatten Axios-style headers (common + method-specific + direct keys)
@@ -523,14 +562,35 @@ function isURLSameOrigin(url) {
 /**
  * Convert a Headers instance into a plain object (Axios-style).
  * Keys are normalised to Capitalized-Header-Name form.
+ * Duplicate Set-Cookie headers are preserved as an array when possible.
  */
 function responseHeadersToObject(headers) {
   const obj = {};
 
   // The forEach on Headers yields lowercase keys in browsers
   if (typeof Headers !== 'undefined' && headers instanceof Headers) {
+    // Modern browsers and Node.js 18+ support getSetCookie()
+    if (typeof headers.getSetCookie === 'function') {
+      const setCookies = headers.getSetCookie();
+      if (setCookies.length > 0) {
+        obj['Set-Cookie'] = setCookies.length === 1 ? setCookies[0] : setCookies;
+      }
+    }
+
     headers.forEach(function (value, key) {
-      obj[formatHeaderName(key)] = value;
+      const normalizedName = formatHeaderName(key);
+      // Skip Set-Cookie (already handled above)
+      if (key === 'set-cookie') return;
+
+      // If header already exists, convert to array to preserve duplicates
+      if (obj[normalizedName] !== undefined) {
+        if (!Array.isArray(obj[normalizedName])) {
+          obj[normalizedName] = [obj[normalizedName]];
+        }
+        obj[normalizedName].push(value);
+      } else {
+        obj[normalizedName] = value;
+      }
     });
   } else {
     // Node http.IncomingHeaders – already a plain object

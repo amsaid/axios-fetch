@@ -802,6 +802,142 @@ async function run() {
   });
 
   // ═══════════════════════════════════════════════════════════════
+  // 20. Edge Cases & Security
+  // ═══════════════════════════════════════════════════════════════
+  console.log('\n── Edge Cases & Security ────────────────────────');
+
+  await test('empty URL throws ERR_BAD_OPTION', async () => {
+    try {
+      await axios.get('');
+      assert(false, 'should have thrown');
+    } catch (err) {
+      assert(axios.isAxiosError(err));
+      assertEqual(err.code, 'ERR_BAD_OPTION');
+    }
+  });
+
+  await test('invalid responseType throws ERR_BAD_OPTION', async () => {
+    try {
+      await axios.get(`${API}/posts/1`, { responseType: 'invalid_type' });
+      assert(false, 'should have thrown');
+    } catch (err) {
+      assert(axios.isAxiosError(err));
+      assertEqual(err.code, 'ERR_BAD_OPTION');
+    }
+  });
+
+  await test('negative timeout throws ERR_BAD_OPTION', async () => {
+    try {
+      await axios.get(`${API}/posts/1`, { timeout: -1000 });
+      assert(false, 'should have thrown');
+    } catch (err) {
+      assert(axios.isAxiosError(err));
+      assertEqual(err.code, 'ERR_BAD_OPTION');
+    }
+  });
+
+  await test('headers.common are applied to all requests', async () => {
+    const inst = axios.create({ baseURL: API });
+    inst.defaults.headers.common['X-Common-Header'] = 'common-value';
+
+    let capturedConfig = null;
+    inst.interceptors.request.use((config) => {
+      capturedConfig = config;
+      return config;
+    });
+
+    await inst.get('/posts/1');
+    assert(capturedConfig.headers.common['X-Common-Header'] === 'common-value');
+  });
+
+  await test('method-specific headers override common headers', async () => {
+    const inst = axios.create({ baseURL: API });
+    inst.defaults.headers.common['Accept'] = 'application/json';
+    // Initialize method-specific headers (they don't exist by default)
+    inst.defaults.headers.post = { 'Content-Type': 'application/x-www-form-urlencoded' };
+
+    let capturedConfig = null;
+    inst.interceptors.request.use((config) => {
+      capturedConfig = config;
+      return config;
+    });
+
+    await inst.post('/posts', { title: 'test' });
+    assert(capturedConfig.headers.post['Content-Type'] === 'application/x-www-form-urlencoded');
+  });
+
+  await test('toFormData converts object to FormData', () => {
+    const data = { name: 'John', age: 30, active: true };
+    const fd = axios.toFormData(data);
+    assert(fd instanceof FormData);
+    assertEqual(fd.get('name'), 'John');
+    assertEqual(fd.get('age'), '30');
+    assertEqual(fd.get('active'), 'true');
+  });
+
+  await test('formToJSON converts FormData to object', () => {
+    const fd = new FormData();
+    fd.append('name', 'John');
+    fd.append('tags', 'a');
+    fd.append('tags', 'b');
+
+    const obj = axios.formToJSON(fd);
+    assertEqual(obj.name, 'John');
+    assert(Array.isArray(obj.tags));
+    assertEqual(obj.tags.length, 2);
+  });
+
+  await test('getUri builds URL with params', () => {
+    const inst = axios.create({ baseURL: 'https://example.com/api' });
+    const uri = inst.getUri({ url: '/users', params: { page: 2, limit: 10 } });
+    assert(uri.includes('/api/users'));
+    assert(uri.includes('page=2'));
+    assert(uri.includes('limit=10'));
+  });
+
+  await test('response includes elapsed time', async () => {
+    const res = await axios.get(`${API}/posts/1`);
+    assert(typeof res._elapsed === 'number');
+    assert(res._elapsed >= 0);
+  });
+
+  await test('instance defaults include transforms', () => {
+    const inst = axios.create();
+    assert(Array.isArray(inst.defaults.transformRequest));
+    assert(Array.isArray(inst.defaults.transformResponse));
+    assert(inst.defaults.transformRequest.length > 0);
+    assert(inst.defaults.transformResponse.length > 0);
+  });
+
+  await test('multiple interceptors run in order', async () => {
+    const inst = axios.create({ baseURL: API });
+    const order = [];
+
+    inst.interceptors.request.use((config) => {
+      order.push('req1');
+      return config;
+    });
+
+    inst.interceptors.request.use((config) => {
+      order.push('req2');
+      return config;
+    });
+
+    inst.interceptors.response.use((res) => {
+      order.push('res1');
+      return res;
+    });
+
+    inst.interceptors.response.use((res) => {
+      order.push('res2');
+      return res;
+    });
+
+    await inst.get('/posts/1');
+    assertEqual(order.join(','), 'req1,req2,res1,res2');
+  });
+
+  // ═══════════════════════════════════════════════════════════════
   // Summary
   // ═══════════════════════════════════════════════════════════════
   console.log('\n' + '═'.repeat(52));
