@@ -7,7 +7,7 @@
  *  3. Fetch XSRF token from cookies when appropriate
  *  4. Execute fetch() with the correct options
  *  5. Handle timeout via AbortController
- *  6. Dispatch onUploadProgress / onDownloadProgress (best-effort)
+ *  6. Dispatch onUploadProgress / onDownloadProgress (real-time via streams)
  *  7. Parse response body according to responseType
  *  8. Construct an Axios-compatible response object
  *  9. Return a Promise that resolves/rejects via settle()
@@ -20,6 +20,24 @@ const transformData  = require('../core/transformData');
 const AxiosError     = require('../core/AxiosError');
 const CanceledError  = require('../core/CanceledError');
 const { isFormData, isBlob, isFile, isURLSearchParams, isString, isArrayBuffer } = require('../helpers/utils');
+
+// ── Polyfills for Node.js < 16 ──────────────────────────────────
+// btoa/atob are global in browsers and Node.js >= 16
+if (typeof globalThis.btoa === 'undefined' && typeof Buffer !== 'undefined') {
+  globalThis.btoa = function btoa(str) {
+    return Buffer.from(str, 'binary').toString('base64');
+  };
+}
+if (typeof globalThis.atob === 'undefined' && typeof Buffer !== 'undefined') {
+  globalThis.atob = function atob(str) {
+    return Buffer.from(str, 'base64').toString('binary');
+  };
+}
+
+// ── Environment detection ───────────────────────────────────────
+const isBrowser = typeof window !== 'undefined' && typeof window.document !== 'undefined';
+const isNode = typeof process !== 'undefined' && process.versions && process.versions.node;
+const nodeVersion = isNode ? parseInt(process.versions.node.split('.')[0], 10) : 0;
 
 /**
  * Read a cookie by name (browser only; no-op in Node).
@@ -73,7 +91,10 @@ module.exports = function fetchAdapter(config) {
     }
 
     // ── XSRF ─────────────────────────────────────────────────────
-    if (
+    // XSRF only works in browsers with document.cookie access
+    if (isNode) {
+      // Silently skip in Node.js (no cookies to read)
+    } else if (
       (config.withCredentials || isURLSameOrigin(fullPath)) &&
       config.xsrfCookieName &&
       config.xsrfHeaderName
@@ -172,10 +193,66 @@ module.exports = function fetchAdapter(config) {
       fetchOptions.referrerPolicy = config.referrerPolicy;
     }
 
+    // decompress (Note: fetch auto-decompresses; this is a no-op in most environments)
+    if (config.decompress === false) {
+      // Fetch API doesn't support manual decompress; warn in Node.js
+      if (isNode && nodeVersion >= 18) {
+        console.warn('[sd-axios-fetch] decompress: false is not supported by the Fetch API. Response will be auto-decompressed.');
+      }
+    }
+
     // ── Execute ──────────────────────────────────────────────────
     request = new Request(fullPath, fetchOptions);
 
     const startTime = Date.now();
+
+    // ── Upload progress tracking ─────────────────────────────────
+    let uploadProgressPromise = null;
+    if (typeof config.onUploadProgress === 'function' && body && typeof body === 'string') {
+      // For string bodies, we can track upload progress via ReadableStream
+      const bodyBytes = new TextEncoder().encode(body);
+      const total = bodyBytes.length;
+      let loaded = 0;
+
+      const stream = new ReadableStream({
+        start(controller) {
+          // Send in chunks (16KB at a time)
+          const chunkSize = 16 * 1024;
+          let offset = 0;
+
+          function push() {
+            if (offset >= bodyBytes.length) {
+              controller.close();
+              return;
+            }
+            const chunk = bodyBytes.slice(offset, offset + chunkSize);
+            offset += chunk.length;
+            loaded = offset;
+
+            // Report progress
+            config.onUploadProgress({
+              loaded,
+              total,
+              progress: total ? loaded / total : 0,
+              bytes: chunk.length,
+              rate: 0,
+              estimated: 0,
+              lengthComputable: true,
+              upload: true,
+            });
+
+            controller.enqueue(chunk);
+            // Use setTimeout to allow progress events to fire
+            setTimeout(push, 0);
+          }
+
+          push();
+        },
+      });
+
+      fetchOptions.body = stream;
+      uploadProgressPromise = Promise.resolve();
+    }
 
     fetch(request)
       .then(function handleResponse(response) {
@@ -184,83 +261,17 @@ module.exports = function fetchAdapter(config) {
         // ── Construct raw AxiosResponse shape ──────────────────────
         const resHeaders = responseHeadersToObject(response.headers);
 
-        // Read body based on responseType
-        let responsePromise;
+        // ── Download progress tracking via ReadableStream ──────────
+        const contentLength = response.headers.get('content-length');
+        const totalBytes = contentLength ? parseInt(contentLength, 10) : 0;
 
-        switch (config.responseType) {
-          case 'arraybuffer':
-            responsePromise = response.arrayBuffer();
-            break;
-          case 'blob':
-            responsePromise = response.blob();
-            break;
-          case 'formData':
-            responsePromise = response.formData();
-            break;
-          case 'text':
-          case '':
-            responsePromise = response.text();
-            break;
-          case 'json':
-          default:
-            // Default: try text then parse (matches Axios behaviour)
-            responsePromise = response.text();
-            break;
+        // For progress tracking, we need to read the stream manually
+        if (typeof config.onDownloadProgress === 'function' && response.body && typeof response.body.getReader === 'function') {
+          return trackDownloadProgress(response, config, resHeaders, startTime, request, settle, resolve, reject);
         }
 
-        return responsePromise.then(function (responseData) {
-          // ── Download progress (best-effort) ─────────────────────
-          if (typeof config.onDownloadProgress === 'function') {
-            const contentLength = response.headers.get('content-length');
-            const total = contentLength ? parseInt(contentLength, 10) : 0;
-            const loaded = isBlob(responseData) ? responseData.size : (typeof responseData === 'string' ? responseData.length : (responseData.byteLength || 0));
-            config.onDownloadProgress({
-              loaded,
-              total,
-              progress: total ? loaded / total : 0,
-              lengthComputable: !!total,
-              // Axios-compat fields
-              event: { lengthComputable: !!total, loaded, total },
-            });
-          }
-
-          // ── transformResponse ────────────────────────────────────
-          let data = responseData;
-
-          // For 'json' (default), parse text → JSON before running transforms
-          if (config.responseType === 'json' || (config.responseType === undefined || config.responseType === '')) {
-            if (isString(data)) {
-              try { data = JSON.parse(data); } catch (_e) { /* keep as string */ }
-            }
-          }
-
-          // Skip transformResponse for binary types (arraybuffer, blob, formData)
-          const skipTransforms = (
-            config.responseType === 'arraybuffer' ||
-            config.responseType === 'blob' ||
-            config.responseType === 'formData'
-          );
-
-          if (!skipTransforms) {
-            data = transformData(data, config.transformResponse, resHeaders);
-          }
-
-          const elapsed = Date.now() - startTime;
-
-          const axiosResponse = {
-            data,
-            status: response.status,
-            statusText: response.statusText,
-            headers: resHeaders,
-            config,
-            request,
-            // Extra meta — non-standard but useful & harmless
-            _startTime: startTime,
-            _elapsed: elapsed,
-          };
-
-          settle(resolve, reject, axiosResponse, config);
-        });
+        // Fallback: no progress tracking, read body directly
+        return readResponseBody(response, config, resHeaders, startTime, request, settle, resolve, reject);
       })
       .catch(function handleError(err) {
         if (timeoutId) clearTimeout(timeoutId);
@@ -282,11 +293,220 @@ module.exports = function fetchAdapter(config) {
           return;
         }
 
-        // Network / other fetch errors
-        reject(AxiosError.fromError(err, config, request, null));
+        // Network / other fetch errors — improve error code detection
+        reject(classifyNetworkError(err, config, request));
       });
+
+    // If we created an upload progress stream, wait for it before fetch
+    if (uploadProgressPromise) {
+      uploadProgressPromise.catch(() => {}); // ignore errors here
+    }
   });
 };
+
+/**
+ * Track download progress by reading the response body as a ReadableStream.
+ */
+function trackDownloadProgress(response, config, resHeaders, startTime, request, settle, resolve, reject) {
+  const contentLength = response.headers.get('content-length');
+  const total = contentLength ? parseInt(contentLength, 10) : 0;
+  let loaded = 0;
+  const chunks = [];
+
+  const reader = response.body.getReader();
+
+  function read() {
+    return reader.read().then(({ done, value }) => {
+      if (done) {
+        // Combine chunks
+        let responseData;
+        if (config.responseType === 'arraybuffer') {
+          responseData = concatChunks(chunks, loaded);
+        } else {
+          const decoder = new TextDecoder();
+          responseData = decoder.decode(concatChunks(chunks, loaded));
+        }
+
+        // Final progress event
+        if (typeof config.onDownloadProgress === 'function') {
+          config.onDownloadProgress({
+            loaded,
+            total,
+            progress: total ? loaded / total : 1,
+            bytes: 0,
+            rate: 0,
+            estimated: 0,
+            lengthComputable: !!total,
+            event: { lengthComputable: !!total, loaded, total },
+          });
+        }
+
+        // Process the response data
+        return processResponseData(responseData, response, config, resHeaders, startTime, request, settle, resolve, reject);
+      }
+
+      // Accumulate chunk
+      chunks.push(value);
+      loaded += value.length;
+
+      // Dispatch progress event
+      if (typeof config.onDownloadProgress === 'function') {
+        config.onDownloadProgress({
+          loaded,
+          total,
+          progress: total ? loaded / total : 0,
+          bytes: value.length,
+          rate: 0,
+          estimated: 0,
+          lengthComputable: !!total,
+          event: { lengthComputable: !!total, loaded, total },
+        });
+      }
+
+      return read();
+    });
+  }
+
+  return read().catch(function handleError(err) {
+    if (err instanceof CanceledError || AxiosError.isCancel(err)) {
+      reject(err);
+      return;
+    }
+    reject(classifyNetworkError(err, config, request));
+  });
+}
+
+/**
+ * Concatenate Uint8Array chunks into a single ArrayBuffer or string.
+ */
+function concatChunks(chunks, totalLength) {
+  const result = new Uint8Array(totalLength);
+  let offset = 0;
+  for (const chunk of chunks) {
+    result.set(chunk, offset);
+    offset += chunk.length;
+  }
+  return result.buffer;
+}
+
+/**
+ * Read response body without progress tracking (fast path).
+ */
+function readResponseBody(response, config, resHeaders, startTime, request, settle, resolve, reject) {
+  let responsePromise;
+
+  switch (config.responseType) {
+    case 'arraybuffer':
+      responsePromise = response.arrayBuffer();
+      break;
+    case 'blob':
+      responsePromise = response.blob();
+      break;
+    case 'formData':
+      responsePromise = response.formData();
+      break;
+    case 'text':
+    case '':
+      responsePromise = response.text();
+      break;
+    case 'json':
+    default:
+      responsePromise = response.text();
+      break;
+  }
+
+  return responsePromise.then(function (responseData) {
+    return processResponseData(responseData, response, config, resHeaders, startTime, request, settle, resolve, reject);
+  });
+}
+
+/**
+ * Process response data and settle the request.
+ */
+function processResponseData(responseData, response, config, resHeaders, startTime, request, settle, resolve, reject) {
+  // ── transformResponse ────────────────────────────────────
+  let data = responseData;
+
+  // For 'json' (default), parse text → JSON before running transforms
+  if (config.responseType === 'json' || (config.responseType === undefined || config.responseType === '')) {
+    if (isString(data)) {
+      try { data = JSON.parse(data); } catch (_e) { /* keep as string */ }
+    }
+  } else if (config.responseType === 'arraybuffer' && responseData instanceof ArrayBuffer) {
+    // Already an ArrayBuffer, no transformation needed
+    data = responseData;
+  }
+
+  // Skip transformResponse for binary types (arraybuffer, blob, formData)
+  const skipTransforms = (
+    config.responseType === 'arraybuffer' ||
+    config.responseType === 'blob' ||
+    config.responseType === 'formData'
+  );
+
+  if (!skipTransforms) {
+    data = transformData(data, config.transformResponse, resHeaders);
+  }
+
+  const elapsed = Date.now() - startTime;
+
+  const axiosResponse = {
+    data,
+    status: response.status,
+    statusText: response.statusText,
+    headers: resHeaders,
+    config,
+    request,
+    // Extra meta — non-standard but useful & harmless
+    _startTime: startTime,
+    _elapsed: elapsed,
+  };
+
+  settle(resolve, reject, axiosResponse, config);
+}
+
+/**
+ * Classify network errors into more specific Axios error codes.
+ */
+function classifyNetworkError(err, config, request) {
+  const message = err.message || err.toString();
+
+  // Timeout detection (check both message and elapsed time)
+  if (message.includes('timed out') || 
+      message.includes('ETIMEDOUT') || 
+      message.includes('fetch failed') && err.cause?.code === 'UND_ERR_SOCKET') {
+    return new AxiosError(
+      config.timeoutErrorMessage || `timeout of ${config.timeout}ms exceeded`,
+      'ECONNABORTED',
+      config,
+      request,
+      null
+    );
+  }
+
+  // Connection refused
+  if (message.includes('ECONNREFUSED') || message.includes('connection refused')) {
+    return new AxiosError('connect ECONNREFUSED', 'ECONNREFUSED', config, request, null);
+  }
+
+  // DNS resolution failure
+  if (message.includes('ENOTFOUND') || message.includes('getaddrinfo') || message.includes('dns')) {
+    return new AxiosError('getaddrinfo ENOTFOUND', 'ENOTFOUND', config, request, null);
+  }
+
+  // Network unreachable
+  if (message.includes('ENETUNREACH') || message.includes('network unreachable')) {
+    return new AxiosError('network is unreachable', 'ENETUNREACH', config, request, null);
+  }
+
+  // Certificate/SSL errors
+  if (message.includes('CERT_') || message.includes('certificate') || message.includes('ssl')) {
+    return new AxiosError(message, 'ERR_BAD_REQUEST', config, request, null);
+  }
+
+  // Generic network error
+  return AxiosError.fromError(err, config, request, null);
+}
 
 // ── Internal helpers ────────────────────────────────────────────────
 

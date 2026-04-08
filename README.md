@@ -6,7 +6,8 @@ A zero-dependency, drop-in replacement for **[Axios](https://github.com/axios/ax
 - **Zero dependencies** — uses only native `fetch`, `AbortController`, `Request`, `Headers`
 - **Full Axios API compatibility** — `get`, `post`, `put`, `patch`, `delete`, `head`, `options`, `create`, interceptors, `CancelToken`, `AbortController`, `axios.all` / `axios.spread`, transforms, timeout, etc.
 - **TypeScript types** included (`dist/sd-axios-fetch.d.ts`)
-- **58 passing interoperability tests** against real APIs
+- **59 passing interoperability tests** against real APIs
+- **Real-time progress tracking** — upload and download progress via ReadableStream
 
 ---
 
@@ -251,6 +252,53 @@ await axios.get('/api/data', { responseType: 'blob' });        // Blob
   request: {},        // the Request object (native fetch)
 }
 ```
+
+---
+
+## Known Limitations
+
+This library is a drop-in replacement for Axios, but due to fundamental differences between the Fetch API and XMLHttpRequest, some features have limitations:
+
+### Progress Callbacks
+
+- **`onDownloadProgress`**: ✅ Fully supported via ReadableStream. Fires real-time progress events as chunks are received.
+- **`onUploadProgress`**: ⚠️ Partially supported. Works for string and JSON-serialized bodies via ReadableStream. Does not work for `Blob`, `File`, `FormData`, or `ArrayBuffer` bodies (Fetch API limitation).
+
+### HTTP Agents & Proxies
+
+- **❌ Not supported**: The Fetch API does not support custom HTTP/HTTPS agents like Node.js `http.Agent`. If you need proxy support or custom TLS configuration, consider:
+  - Using environment variables (`HTTP_PROXY`, `HTTPS_PROXY`) with Node.js
+  - Using a service worker in browsers
+  - Sticking with Axios for advanced proxy/agent scenarios
+
+### Redirect Handling
+
+- **⚠️ Partial**: The `maxRedirects` option maps to Fetch's `redirect` mode:
+  - `maxRedirects: 0` → `redirect: 'manual'` (returns opaque response)
+  - `maxRedirects: -1` or default → `redirect: 'follow'` (browser/Node handles redirects)
+  - **Limitation**: Fetch does not expose redirect count or allow custom redirect limits. The browser/Node.js default is typically 20 redirects.
+
+### Response Compression
+
+- **⚠️ Auto-only**: The `decompress` option is not supported. The Fetch API automatically decompresses gzip, deflate, and brotli responses. Setting `decompress: false` will log a warning but will not prevent decompression.
+
+### XSRF Tokens
+
+- **⚠️ Browser-only**: XSRF token support (`xsrfCookieName`, `xsrfHeaderName`) only works in browser environments with `document.cookie` access. In Node.js, XSRF checks are silently skipped.
+
+### Error Code Granularity
+
+- **✅ Improved**: Network errors are classified with specific codes:
+  - `ECONNABORTED` — timeout
+  - `ECONNREFUSED` — connection refused
+  - `ENOTFOUND` — DNS resolution failure
+  - `ENETUNREACH` — network unreachable
+  - `ERR_BAD_REQUEST` — SSL/certificate errors
+  - `ERR_NETWORK` — generic network errors
+
+### Response Headers
+
+- **⚠️ Duplicate headers**: The `Set-Cookie` header and other duplicate headers are flattened to the last value due to Fetch API's `Headers.forEach()` behavior. Axios preserves multiple values as arrays.
 
 ---
 

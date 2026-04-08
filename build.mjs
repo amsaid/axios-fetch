@@ -11,6 +11,16 @@ import { fileURLToPath } from 'url';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const root = __dirname;
 
+// ── Helper to read version from package.json ─────────────────────
+function getVersion() {
+  try {
+    const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf-8'));
+    return pkg.version || '0.0.0';
+  } catch {
+    return '0.0.0';
+  }
+}
+
 // ── Read all source files in dependency order ──────────────────────
 
 const files = [
@@ -48,7 +58,7 @@ function buildBundle(format) {
 
   if (!isESM) {
     code += `/**
- * sd-axios-fetch v0.0.3
+ * sd-axios-fetch v${getVersion()}
  * A drop-in replacement for Axios.js built on the Fetch API.
  * (CJS / UMD bundle)  —  ${new Date().toISOString().split('T')[0]}
  */
@@ -69,7 +79,7 @@ function __require(id) {
 `;
   } else {
     code += `/**
- * sd-axios-fetch v0.0.3
+ * sd-axios-fetch v${getVersion()}
  * A drop-in replacement for Axios.js built on the Fetch API.
  * (ESM bundle)  —  ${new Date().toISOString().split('T')[0]}
  */
