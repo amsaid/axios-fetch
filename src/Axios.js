@@ -87,7 +87,8 @@ function createDispatcher(axiosInstance) {
  * @param {Object} [instanceConfig] - Instance-level defaults.
  */
 function Axios(instanceConfig) {
-  this.defaults = instanceConfig || {};
+  // Merge DEFAULTS ← instanceConfig so instances inherit transforms, headers, etc.
+  this.defaults = mergeConfig(mergeConfig.DEFAULTS, instanceConfig || {});
   this.interceptors = {
     request:  new InterceptorManager(),
     response: new InterceptorManager(),

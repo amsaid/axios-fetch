@@ -75,8 +75,8 @@ module.exports = function fetchAdapter(config) {
     }
 
     // ── Headers ──────────────────────────────────────────────────
-    // Work on a shallow copy so we don't mutate the frozen defaults
-    const requestHeaders = { ...config.headers };
+    // Flatten Axios-style headers (common + method-specific + direct keys)
+    const requestHeaders = flattenHeaders(config.headers, config.method);
 
     // Flatten content-type convenience
     if (config.contentType) {
@@ -565,4 +565,49 @@ function normalizeHeadersForFetch(headers) {
     }
   }
   return out;
+}
+
+/**
+ * Flatten Axios-style headers into a plain object.
+ *
+ * Axios supports three levels of headers:
+ *   1. headers.common — applied to all methods
+ *   2. headers[method] — applied to a specific method
+ *   3. headers['Header-Name'] — direct header assignment
+ *
+ * This function merges them in order: common → method-specific → direct.
+ *
+ * @param {Object} headers - Axios headers object (may contain common/method keys).
+ * @param {string} [method] - HTTP method (lowercase).
+ * @returns {Object} Flattened headers ready for fetch.
+ */
+function flattenHeaders(headers, method) {
+  if (!headers) return {};
+
+  const result = {};
+  const HTTP_METHODS = ['get', 'post', 'put', 'patch', 'delete', 'head', 'options'];
+
+  // 1. Start with 'common' headers
+  if (headers.common && typeof headers.common === 'object') {
+    Object.assign(result, headers.common);
+  }
+
+  // 2. Apply method-specific headers
+  if (method) {
+    const methodKey = method.toLowerCase();
+    if (headers[methodKey] && typeof headers[methodKey] === 'object') {
+      Object.assign(result, headers[methodKey]);
+    }
+  }
+
+  // 3. Apply direct headers (skip 'common' and HTTP method keys)
+  for (const key of Object.keys(headers)) {
+    if (key === 'common') continue;
+    if (HTTP_METHODS.includes(key.toLowerCase())) continue;
+    if (headers[key] != null) {
+      result[key] = headers[key];
+    }
+  }
+
+  return result;
 }

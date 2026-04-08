@@ -10,12 +10,11 @@ const { forEach, isPlainObject, deepMerge } = require('../helpers/utils');
 
 /**
  * Keys whose values should be deeply merged (plain objects only).
+ * NOTE: 'headers' is NOT deep-merged — it has special Axios-style handling
+ * via mergeHeaders() which preserves common/method-specific/direct structure.
  */
 const DEEP_MERGE_KEYS = [
-  'headers',
   'params',
-  'transformRequest',
-  'transformResponse',
 ];
 
 /**
@@ -127,42 +126,47 @@ function applyTo(target, source) {
 
 /**
  * Axios-style header merging.
+ * Preserves the Axios header structure:
+ *   { common: {...}, get: {...}, post: {...}, 'X-Custom': 'value' }
+ *
  * - `common` keys are baseline
  * - Method-specific keys override
  * - Instance-level keys override everything
  */
 function mergeHeaders(target, source) {
   const result = {};
+  const HTTP_METHODS = ['get', 'post', 'put', 'patch', 'delete', 'head', 'options', 'purge', 'link', 'unlink'];
 
-  // Start with common baseline
-  const common = (target && target.common) || {};
-  Object.assign(result, common);
+  // 1. Merge 'common' headers
+  result.common = {};
+  if (target && target.common) Object.assign(result.common, target.common);
+  if (source && source.common) Object.assign(result.common, source.common);
 
-  // Copy non-common, non-method keys from target (instance defaults)
+  // 2. Merge method-specific headers
+  for (const method of HTTP_METHODS) {
+    if ((target && target[method]) || (source && source[method])) {
+      result[method] = {};
+      if (target && target[method]) Object.assign(result[method], target[method]);
+      if (source && source[method]) Object.assign(result[method], source[method]);
+    }
+  }
+
+  // 3. Copy non-common, non-method keys from target (instance defaults)
   if (target) {
     forEach(target, (val, key) => {
-      if (key !== 'common' && !isHttpMethod(key)) {
+      if (key !== 'common' && !HTTP_METHODS.includes(key.toLowerCase())) {
         result[key] = val;
       }
     });
   }
 
-  // Apply source (per-request headers override)
+  // 4. Apply source direct keys (per-request headers override)
   if (source) {
-    if (source.common) {
-      Object.assign(result, source.common);
-    }
     forEach(source, (val, key) => {
-      if (key !== 'common' && !isHttpMethod(key)) {
+      if (key !== 'common' && !HTTP_METHODS.includes(key.toLowerCase())) {
         result[key] = val;
       }
     });
-
-    // Method-specific from source (get, post, …)
-    const method = source.method ? source.method.toLowerCase() : (result.method ? result.method.toLowerCase() : '');
-    if (method && source[method]) {
-      Object.assign(result, source[method]);
-    }
   }
 
   return result;

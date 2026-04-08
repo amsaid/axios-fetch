@@ -1,6 +1,6 @@
 {
   "name": "sd-axios-fetch",
-  "version": "0.0.5",
+  "version": "0.0.6",
   "description": "A drop-in replacement for Axios.js built entirely on the Fetch API. Full API interoperability with zero Axios dependencies.",
   "main": "dist/sd-axios-fetch.js",
   "module": "dist/sd-axios-fetch.mjs",
@@ -37,7 +37,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/your-username/sd-axios-fetch"
+    "url": "git+https://github.com/your-username/sd-axios-fetch.git"
   },
   "browserslist": [
     "node >= 14",

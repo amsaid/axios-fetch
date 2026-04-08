@@ -1,5 +1,5 @@
 /**
- * sd-axios-fetch v0.0.5
+ * sd-axios-fetch v0.0.6
  * A drop-in replacement for Axios.js built on the Fetch API.
  * (CJS / UMD bundle)  —  2026-04-08
  */
@@ -622,12 +622,11 @@ const { forEach, isPlainObject, deepMerge } = require("src/helpers/utils.js");
 
 /**
  * Keys whose values should be deeply merged (plain objects only).
+ * NOTE: 'headers' is NOT deep-merged — it has special Axios-style handling
+ * via mergeHeaders() which preserves common/method-specific/direct structure.
  */
 const DEEP_MERGE_KEYS = [
-  'headers',
   'params',
-  'transformRequest',
-  'transformResponse',
 ];
 
 /**
@@ -739,42 +738,47 @@ function applyTo(target, source) {
 
 /**
  * Axios-style header merging.
+ * Preserves the Axios header structure:
+ *   { common: {...}, get: {...}, post: {...}, 'X-Custom': 'value' }
+ *
  * - `common` keys are baseline
  * - Method-specific keys override
  * - Instance-level keys override everything
  */
 function mergeHeaders(target, source) {
   const result = {};
+  const HTTP_METHODS = ['get', 'post', 'put', 'patch', 'delete', 'head', 'options', 'purge', 'link', 'unlink'];
 
-  // Start with common baseline
-  const common = (target && target.common) || {};
-  Object.assign(result, common);
+  // 1. Merge 'common' headers
+  result.common = {};
+  if (target && target.common) Object.assign(result.common, target.common);
+  if (source && source.common) Object.assign(result.common, source.common);
 
-  // Copy non-common, non-method keys from target (instance defaults)
+  // 2. Merge method-specific headers
+  for (const method of HTTP_METHODS) {
+    if ((target && target[method]) || (source && source[method])) {
+      result[method] = {};
+      if (target && target[method]) Object.assign(result[method], target[method]);
+      if (source && source[method]) Object.assign(result[method], source[method]);
+    }
+  }
+
+  // 3. Copy non-common, non-method keys from target (instance defaults)
   if (target) {
     forEach(target, (val, key) => {
-      if (key !== 'common' && !isHttpMethod(key)) {
+      if (key !== 'common' && !HTTP_METHODS.includes(key.toLowerCase())) {
         result[key] = val;
       }
     });
   }
 
-  // Apply source (per-request headers override)
+  // 4. Apply source direct keys (per-request headers override)
   if (source) {
-    if (source.common) {
-      Object.assign(result, source.common);
-    }
     forEach(source, (val, key) => {
-      if (key !== 'common' && !isHttpMethod(key)) {
+      if (key !== 'common' && !HTTP_METHODS.includes(key.toLowerCase())) {
         result[key] = val;
       }
     });
-
-    // Method-specific from source (get, post, …)
-    const method = source.method ? source.method.toLowerCase() : (result.method ? result.method.toLowerCase() : '');
-    if (method && source[method]) {
-      Object.assign(result, source[method]);
-    }
   }
 
   return result;
@@ -905,8 +909,8 @@ module.exports = function fetchAdapter(config) {
     }
 
     // ── Headers ──────────────────────────────────────────────────
-    // Work on a shallow copy so we don't mutate the frozen defaults
-    const requestHeaders = { ...config.headers };
+    // Flatten Axios-style headers (common + method-specific + direct keys)
+    const requestHeaders = flattenHeaders(config.headers, config.method);
 
     // Flatten content-type convenience
     if (config.contentType) {
@@ -1397,6 +1401,51 @@ function normalizeHeadersForFetch(headers) {
   return out;
 }
 
+/**
+ * Flatten Axios-style headers into a plain object.
+ *
+ * Axios supports three levels of headers:
+ *   1. headers.common — applied to all methods
+ *   2. headers[method] — applied to a specific method
+ *   3. headers['Header-Name'] — direct header assignment
+ *
+ * This function merges them in order: common → method-specific → direct.
+ *
+ * @param {Object} headers - Axios headers object (may contain common/method keys).
+ * @param {string} [method] - HTTP method (lowercase).
+ * @returns {Object} Flattened headers ready for fetch.
+ */
+function flattenHeaders(headers, method) {
+  if (!headers) return {};
+
+  const result = {};
+  const HTTP_METHODS = ['get', 'post', 'put', 'patch', 'delete', 'head', 'options'];
+
+  // 1. Start with 'common' headers
+  if (headers.common && typeof headers.common === 'object') {
+    Object.assign(result, headers.common);
+  }
+
+  // 2. Apply method-specific headers
+  if (method) {
+    const methodKey = method.toLowerCase();
+    if (headers[methodKey] && typeof headers[methodKey] === 'object') {
+      Object.assign(result, headers[methodKey]);
+    }
+  }
+
+  // 3. Apply direct headers (skip 'common' and HTTP method keys)
+  for (const key of Object.keys(headers)) {
+    if (key === 'common') continue;
+    if (HTTP_METHODS.includes(key.toLowerCase())) continue;
+    if (headers[key] != null) {
+      result[key] = headers[key];
+    }
+  }
+
+  return result;
+}
+
 };
 
 // ── src/Axios.js ───────────────────────────────────────────
@@ -1488,7 +1537,8 @@ function createDispatcher(axiosInstance) {
  * @param {Object} [instanceConfig] - Instance-level defaults.
  */
 function Axios(instanceConfig) {
-  this.defaults = instanceConfig || {};
+  // Merge DEFAULTS ← instanceConfig so instances inherit transforms, headers, etc.
+  this.defaults = mergeConfig(mergeConfig.DEFAULTS, instanceConfig || {});
   this.interceptors = {
     request:  new InterceptorManager(),
     response: new InterceptorManager(),
