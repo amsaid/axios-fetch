@@ -147,7 +147,7 @@ function __require(id) {
     // ESM: concatenate modules with rewritten imports
     // We use a simple approach: wrap each in a block scope and use
     // a module map with getters.
-    code += `const __modules = {};\n`;
+    code += `const __modules = {};\nconst __cache = {};\n\n`;
 
     for (const rel of moduleNames) {
       const src = modules[rel];
@@ -160,9 +160,13 @@ function __require(id) {
       code += `};\n\n`;
     }
 
-    // ESM require helper
+    // ESM require helper (with cache — without it every module would be
+    // instantiated more than once, breaking cross-module `instanceof` checks
+    // and shared state such as the defaults object).
     code += `function __require(id) {\n`;
+    code += `  if (__cache[id]) return __cache[id].exports;\n`;
     code += `  const mod = { exports: {} };\n`;
+    code += `  __cache[id] = mod;\n`;
     code += `  __modules[id](__require, mod, mod.exports);\n`;
     code += `  return mod.exports;\n`;
     code += `}\n\n`;

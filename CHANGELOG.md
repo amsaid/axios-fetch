@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.1] - 2026-10-10
+
+### Fixed
+- **ESM bundle regression**: `dist/sd-axios-fetch.mjs` did not cache modules in its
+  internal `require`, so every `require()` instantiated a *new copy* of each module.
+  Cross-module `instanceof` checks then failed — most visibly, an `AxiosHeaders`
+  instance created by one copy was not recognised by another and was treated as a
+  header *name*, throwing `header name must be a non-empty string` on the first
+  request. The ESM `require` now uses the same module cache as the CJS bundle.
+- `AxiosHeaders#set` now also recognises `AxiosHeaders` instances from a foreign copy
+  (detected via `Symbol.toStringTag`), as defence in depth.
+- Added an ESM-bundle regression test (107 tests total).
+
 ## [0.1.0] - 2026-10-10
 
 A large Axios 1.x parity pass. `mergeConfig`, header handling and the request
@@ -186,6 +199,7 @@ pipeline were reworked to match `axios` exactly; several long-standing bugs were
 - 58 interoperability tests
 - UMD + ESM bundles
 
+[0.1.1]: https://github.com/amsaid/axios-fetch/releases/tag/v0.1.1
 [0.1.0]: https://github.com/amsaid/axios-fetch/releases/tag/v0.1.0
 [0.0.8]: https://github.com/amsaid/axios-fetch/releases/tag/v0.0.8
 [0.0.7]: https://github.com/amsaid/axios-fetch/releases/tag/v0.0.7

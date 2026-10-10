@@ -7,7 +7,7 @@ A zero-dependency, drop-in replacement for **[Axios](https://github.com/axios/ax
 - **~96 KB** single-file bundle (UMD + ESM, unminified)
 - **Zero dependencies** — uses only native `fetch`, `AbortController`, `Request`, `Headers`, `ReadableStream`
 - **Axios 1.x API compatible** — `request`, `get`, `post`, `put`, `patch`, `delete`, `head`, `options`, `postForm`/`putForm`/`patchForm`, `create`, interceptors, `AxiosHeaders`, `CancelToken`, `AbortController`, `all`/`spread`, transforms, timeout, progress, `mergeConfig`, `toFormData`/`formToJSON`
-- **106 passing interoperability tests**
+- **107 passing interoperability tests**
 - **Real-time progress tracking** — upload and download progress via `ReadableStream`
 - **TypeScript types** included (`dist/sd-axios-fetch.d.ts`, strict-mode clean)
 

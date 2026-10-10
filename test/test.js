@@ -1361,6 +1361,43 @@ async function run() {
   });
 
   // ═══════════════════════════════════════════════════════════════
+  // 22. ESM bundle (regression guard)
+  // ═══════════════════════════════════════════════════════════════
+  console.log('\n── ESM Bundle ───────────────────────────────────');
+
+  await test('ESM bundle exposes a single module instance', async () => {
+    // Regression: the ESM bundle's __require must cache modules. Without a
+    // cache each require() created a new copy of AxiosHeaders, so `instanceof`
+    // failed across modules and requests threw "header name must be a
+    // non-empty string".
+    const esm = await import(path.resolve(__dirname, '..', 'dist', 'sd-axios-fetch.mjs'));
+    const esmAxios = esm.default;
+
+    assertEqual(typeof esmAxios, 'function');
+    assertEqual(esmAxios.AxiosHeaders, esm.AxiosHeaders, 'named export must be the same class');
+    assertEqual(esmAxios.VERSION, axios.VERSION);
+
+    const inst = esmAxios.create({ baseURL: local.base });
+    const res = await inst.get('/json');
+    assertEqual(res.status, 200);
+    assertEqual(res.data.id, 7);
+    assert(res.headers instanceof esmAxios.AxiosHeaders);
+
+    // GET with default headers (the exact failing case)
+    const res2 = await inst.get('/echo');
+    assertEqual(res2.data.method, 'GET');
+    assertEqual(res2.data.accept, 'application/json, text/plain, */*');
+
+    // POST with auth + custom headers
+    const res3 = await inst.post('/echo', { name: 'Z' }, {
+      headers: { Authorization: 'Bearer token' },
+    });
+    assertEqual(res3.data.method, 'POST');
+    assertEqual(res3.data.authorization, 'Bearer token');
+    assertEqual(res3.data.contentType, 'application/json');
+  });
+
+  // ═══════════════════════════════════════════════════════════════
   // Summary
   // ═══════════════════════════════════════════════════════════════
   local.server && local.server.close();

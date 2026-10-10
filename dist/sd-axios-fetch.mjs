@@ -1,10 +1,12 @@
 /**
- * sd-axios-fetch v0.1.0
+ * sd-axios-fetch v0.1.1
  * A drop-in replacement for Axios.js built on the Fetch API.
  * (ESM bundle)  —  2026-10-10
  */
 
 const __modules = {};
+const __cache = {};
+
 // ── src/helpers/utils.js ───────────────────────────────────────────
 __modules["src/helpers/utils.js"] = function (require, module, exports) {
 /**
@@ -1200,6 +1202,14 @@ function parseTokens(str) {
 
 const isValidHeaderName = (str) => /^[-_a-zA-Z0-9^`|~,!#$%&'*+.]+$/.test(str.trim());
 
+/**
+ * Detects an AxiosHeaders instance even when it comes from a different copy of
+ * the class (e.g. a duplicated module in a mis-bundled build). Without this a
+ * foreign instance would fall through to the "header name" branch and throw.
+ */
+const isAxiosHeadersInstance = (thing) => thing != null && typeof thing === 'object' &&
+  Object.prototype.toString.call(thing) === '[object AxiosHeaders]';
+
 function matchHeaderValue(context, value, header, filter, isHeaderNameFilter) {
   if (isFunction(filter)) {
     return filter.call(this, value, header);
@@ -1260,7 +1270,7 @@ class AxiosHeaders {
     const setHeaders = (headers, _rewrite) =>
       forEach(headers, (_value, _header) => setHeader(_value, _header, _rewrite));
 
-    if (isPlainObject(header) || header instanceof this.constructor) {
+    if (isPlainObject(header) || header instanceof this.constructor || isAxiosHeadersInstance(header)) {
       setHeaders(header, valueOrRewrite);
     } else if (isString(header) && (header = header.trim()) && !isValidHeaderName(header)) {
       setHeaders(parseHeaders(header), valueOrRewrite);
@@ -3164,7 +3174,7 @@ module.exports = Axios;
 
 // ── src/version.js ───────────────────────────────────────────
 __modules["src/version.js"] = function (require, module, exports) {
-module.exports = "0.1.0";
+module.exports = "0.1.1";
 };
 
 // ── src/index.js ───────────────────────────────────────────
@@ -3221,7 +3231,9 @@ module.exports = axios;
 };
 
 function __require(id) {
+  if (__cache[id]) return __cache[id].exports;
   const mod = { exports: {} };
+  __cache[id] = mod;
   __modules[id](__require, mod, mod.exports);
   return mod.exports;
 }

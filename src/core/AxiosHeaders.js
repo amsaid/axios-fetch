@@ -47,6 +47,14 @@ function parseTokens(str) {
 
 const isValidHeaderName = (str) => /^[-_a-zA-Z0-9^`|~,!#$%&'*+.]+$/.test(str.trim());
 
+/**
+ * Detects an AxiosHeaders instance even when it comes from a different copy of
+ * the class (e.g. a duplicated module in a mis-bundled build). Without this a
+ * foreign instance would fall through to the "header name" branch and throw.
+ */
+const isAxiosHeadersInstance = (thing) => thing != null && typeof thing === 'object' &&
+  Object.prototype.toString.call(thing) === '[object AxiosHeaders]';
+
 function matchHeaderValue(context, value, header, filter, isHeaderNameFilter) {
   if (isFunction(filter)) {
     return filter.call(this, value, header);
@@ -107,7 +115,7 @@ class AxiosHeaders {
     const setHeaders = (headers, _rewrite) =>
       forEach(headers, (_value, _header) => setHeader(_value, _header, _rewrite));
 
-    if (isPlainObject(header) || header instanceof this.constructor) {
+    if (isPlainObject(header) || header instanceof this.constructor || isAxiosHeadersInstance(header)) {
       setHeaders(header, valueOrRewrite);
     } else if (isString(header) && (header = header.trim()) && !isValidHeaderName(header)) {
       setHeaders(parseHeaders(header), valueOrRewrite);
