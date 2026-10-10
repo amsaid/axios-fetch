@@ -6,98 +6,63 @@
  *
  *   axios(config)
  *   axios(url[, config])
- *   axios.get / .post / .put / .patch / .delete / .head / .options / .request
+ *   axios.request
+ *   axios.get / .post / .put / .patch / .delete / .head / .options
+ *   axios.purge / .link / .unlink
+ *   axios.postForm / .putForm / .patchForm
  *   axios.create([defaults])
  *   axios.all / axios.spread
  *   axios.defaults
  *   axios.interceptors.request / .response
- *   axios.CancelToken / axios.CanceledError / axios.AxiosError
- *   axios.isCancel / axios.isAxiosError / axios.toFormData
+ *   axios.getUri
  */
 'use strict';
 
-const mergeConfig      = require('./core/mergeConfig');
+const mergeConfig        = require('./core/mergeConfig');
+const defaults           = require('./core/defaults');
 const InterceptorManager = require('./core/InterceptorManager');
-const AxiosError        = require('./core/AxiosError');
-const CanceledError     = require('./core/CanceledError');
-const CancelToken       = require('./core/CancelToken');
-const { buildURL, combineURLs } = require('./core/buildURL');
-const fetchAdapter      = require('./adapters/fetch');
-
-// ── Method helpers ──────────────────────────────────────────────
-
-const HTTP_METHODS = ['get', 'post', 'put', 'patch', 'delete', 'head', 'options'];
-
-/**
- * Create a dispatch function bound to `this` (instance or default).
- * Separated out so both the constructor and Axios.prototype.request share logic.
- */
-function createDispatcher(axiosInstance) {
-  return function dispatchRequest(config) {
-    // Allow axios(url, config) shorthand
-    if (typeof config === 'string') {
-      config = arguments[1] || {};
-      config.url = arguments[0];
-    } else {
-      config = config || {};
-    }
-
-    // Coerce method to lowercase
-    config.method = (config.method || axiosInstance.defaults.method || 'get').toLowerCase();
-
-    // Merge defaults → instance defaults → per-call config
-    const fullConfig = mergeConfig(axiosInstance.defaults, { headers: {} }, config);
-
-    // ── Interceptor chain ──────────────────────────────────────
-    const requestInterceptors = [];
-    const responseInterceptors = [];
-
-    // Collect instance interceptors
-    axiosInstance.interceptors.request.forEach(function (h) { requestInterceptors.push(h); });
-    axiosInstance.interceptors.response.forEach(function (h) { responseInterceptors.push(h); });
-
-    let chain = [fetchAdapter, undefined];     // [fulfilled, rejected]
-
-    // Prepend request interceptors (run in registration order)
-    for (let i = requestInterceptors.length - 1; i >= 0; i--) {
-      chain.unshift(requestInterceptors[i].resolved, requestInterceptors[i].rejected);
-    }
-
-    // Append response interceptors
-    for (let i = 0; i < responseInterceptors.length; i++) {
-      chain.push(responseInterceptors[i].resolved, responseInterceptors[i].rejected);
-    }
-
-    let promise = Promise.resolve(fullConfig);
-
-    // Execute the chain
-    while (chain.length) {
-      const onFulfilled = chain.shift();
-      const onRejected  = chain.shift();
-      promise = promise.then(onFulfilled, onRejected);
-    }
-
-    return promise;
-  };
-}
+const AxiosError         = require('./core/AxiosError');
+const CanceledError      = require('./core/CanceledError');
+const CancelToken        = require('./core/CancelToken');
+const AxiosHeaders       = require('./core/AxiosHeaders');
+const dispatchRequest    = require('./core/dispatchRequest');
+const { buildURL, buildFullPath } = require('./core/buildURL');
+const toFormData         = require('./helpers/toFormData');
+const formDataToJSON     = require('./helpers/formDataToJSON');
+const { isFunction, isPlainObject, merge, forEach } = require('./helpers/utils');
 
 /**
- * The Axios constructor — also serves as a callable interface.
+ * The Axios constructor — instances hold `defaults` + `interceptors` and the
+ * `request()` method (also exposed as a callable factory by `Axios.create`).
  *
  * @param {Object} [instanceConfig] - Instance-level defaults.
  */
 function Axios(instanceConfig) {
-  // Merge DEFAULTS ← instanceConfig so instances inherit transforms, headers, etc.
-  this.defaults = mergeConfig(mergeConfig.DEFAULTS, instanceConfig || {});
+  this.defaults = instanceConfig || {};
   this.interceptors = {
-    request:  new InterceptorManager(),
+    request: new InterceptorManager(),
     response: new InterceptorManager(),
   };
 }
 
 // ── Core request method ──────────────────────────────────────────
 
+/**
+ * Dispatch a request.
+ *
+ * @param {String|Object} configOrUrl
+ * @param {Object} [config]
+ * @returns {Promise}
+ */
 Axios.prototype.request = function request(configOrUrl, config) {
+  return this._request(configOrUrl, config);
+};
+
+/**
+ * @private
+ */
+Axios.prototype._request = function _request(configOrUrl, config) {
+  // Allow for axios('example/url'[, config]) a la fetch API
   if (typeof configOrUrl === 'string') {
     config = config || {};
     config.url = configOrUrl;
@@ -105,56 +70,179 @@ Axios.prototype.request = function request(configOrUrl, config) {
     config = configOrUrl || {};
   }
 
-  const dispatcher = createDispatcher(this);
-  return dispatcher(config);
+  config = mergeConfig(this.defaults, config);
+
+  const { paramsSerializer } = config;
+
+  if (paramsSerializer != null) {
+    if (isFunction(paramsSerializer)) {
+      config.paramsSerializer = { serialize: paramsSerializer };
+    }
+  }
+
+  // Set config.method
+  config.method = (config.method || this.defaults.method || 'get').toLowerCase();
+
+  // Flatten headers (common + per-method), matching Axios' AxiosHeaders.concat
+  let contextHeaders = config.headers && merge(config.headers.common, config.headers[config.method]);
+
+  config.headers && forEach(
+    ['delete', 'get', 'head', 'post', 'put', 'patch', 'common'],
+    (method) => {
+      delete config.headers[method];
+    },
+  );
+
+  config.headers = AxiosHeaders.concat(contextHeaders, config.headers);
+
+  // filter out skipped interceptors
+  const requestInterceptorChain = [];
+  let synchronousRequestInterceptors = true;
+
+  this.interceptors.request.forEach(function unshiftRequestInterceptors(interceptor) {
+    if (isFunction(interceptor.runWhen) && interceptor.runWhen(config) === false) {
+      return;
+    }
+
+    synchronousRequestInterceptors = synchronousRequestInterceptors && interceptor.synchronous;
+
+    requestInterceptorChain.unshift(interceptor.fulfilled, interceptor.rejected);
+  });
+
+  const responseInterceptorChain = [];
+
+  this.interceptors.response.forEach(function pushResponseInterceptors(interceptor) {
+    responseInterceptorChain.push(interceptor.fulfilled, interceptor.rejected);
+  });
+
+  let promise;
+  let i = 0;
+  let len;
+
+  if (!synchronousRequestInterceptors) {
+    const chain = [dispatchRequest.bind(this), undefined];
+    chain.unshift.apply(chain, requestInterceptorChain);
+    chain.push.apply(chain, responseInterceptorChain);
+    len = chain.length;
+
+    promise = Promise.resolve(config);
+
+    while (i < len) {
+      promise = promise.then(chain[i++], chain[i++]);
+    }
+
+    return promise;
+  }
+
+  // Synchronous interceptor chain
+  len = requestInterceptorChain.length;
+
+  let newConfig = config;
+
+  i = 0;
+
+  while (i < len) {
+    const onFulfilled = requestInterceptorChain[i++];
+    const onRejected = requestInterceptorChain[i++];
+    try {
+      newConfig = onFulfilled(newConfig);
+    } catch (error) {
+      onRejected && onRejected.call(this, error);
+      break;
+    }
+  }
+
+  try {
+    promise = dispatchRequest.call(this, newConfig);
+  } catch (error) {
+    return Promise.reject(error);
+  }
+
+  i = 0;
+  len = responseInterceptorChain.length;
+
+  while (i < len) {
+    promise = promise.then(responseInterceptorChain[i++], responseInterceptorChain[i++]);
+  }
+
+  return promise;
 };
 
-// Make instances callable: instance(config) or instance(url, config)
-Axios.prototype.constructor = Axios;
+// ── getUri (returns the built URL without dispatching) ──────────
 
-// ── HTTP method shorthands ───────────────────────────────────────
-// Methods with a body (data): post, put, patch
-const METHODS_WITH_DATA = ['post', 'put', 'patch'];
+Axios.prototype.getUri = function getUri(config) {
+  config = mergeConfig(this.defaults, config);
+  const fullPath = buildFullPath(config.baseURL, config.url);
+  return buildURL(fullPath, config.params, config.paramsSerializer);
+};
 
-HTTP_METHODS.forEach(function forEachMethod(method) {
-  if (METHODS_WITH_DATA.includes(method)) {
-    // (url, data?, config?)
-    Axios.prototype[method] = function (url, data, config) {
-      return this.request(mergeConfig({ url, method, data }, config));
+// ── HTTP method aliases ───────────────────────────────────────────
+
+const HTTP_METHODS = ['delete', 'get', 'head', 'options'];
+const HTTP_METHODS_WITH_DATA = ['post', 'put', 'patch'];
+
+/**
+ * Attach the Axios method aliases to a target (the prototype, or a created
+ * instance). All methods dispatch through `this.request`.
+ */
+function attachMethods(target) {
+  HTTP_METHODS.forEach(function forEachMethodNoData(method) {
+    target[method] = function (url, config) {
+      return this.request(mergeConfig(config || {}, {
+        method,
+        url,
+        data: (config || {}).data,
+      }));
     };
-  } else {
-    // get, delete, head, options — (url, config?)
-    Axios.prototype[method] = function (url, config) {
-      return this.request(mergeConfig({ url, method }, config));
-    };
-  }
-});
+  });
+
+  HTTP_METHODS_WITH_DATA.forEach(function forEachMethodWithData(method) {
+    function generateHTTPMethod(isForm) {
+      return function httpMethod(url, data, config) {
+        return this.request(mergeConfig(config || {}, {
+          method,
+          headers: isForm ? { 'Content-Type': 'multipart/form-data' } : {},
+          url,
+          data,
+        }));
+      };
+    }
+
+    target[method] = generateHTTPMethod(false);
+    target[method + 'Form'] = generateHTTPMethod(true);
+  });
+}
+
+attachMethods(Axios.prototype);
+
+// Keep the shorthand lists exported for the instance factory.
+Axios.HTTP_METHODS = HTTP_METHODS;
+Axios.HTTP_METHODS_WITH_DATA = HTTP_METHODS_WITH_DATA;
+Axios.attachMethods = attachMethods;
 
 // ── create() — factory for new instances ─────────────────────────
 
 Axios.create = function create(instanceConfig) {
-  const ctx = new Axios(instanceConfig);
-  // Wrap request so it's a plain function (matches Axios.create API)
-  const req = ctx.request.bind(ctx);
-  req.defaults  = ctx.defaults;
-  req.interceptors = ctx.interceptors;
+  const ctx = new Axios(mergeConfig(defaults, instanceConfig || {}));
 
-  // Re-attach method shorthands
-  HTTP_METHODS.forEach(function forEachMethod(method) {
-    if (METHODS_WITH_DATA.includes(method)) {
-      req[method] = function (url, data, config) {
-        return req(mergeConfig({ url, method, data }, config));
-      };
-    } else {
-      req[method] = function (url, config) {
-        return req(mergeConfig({ url, method }, config));
-      };
-    }
+  // Wrap request so it's a plain callable (matches Axios.create API)
+  const req = ctx.request.bind(ctx);
+
+  // Copy Axios.prototype to the instance (bound to the instance context)
+  Object.keys(Axios.prototype).forEach(function forEachMethod(prop) {
+    const method = Axios.prototype[prop];
+    req[prop] = function () {
+      return method.apply(ctx, arguments);
+    };
   });
 
-  // Attach getUri
-  req.getUri = function (config) {
-    return ctx.getUri(config);
+  // Copy context to instance
+  req.defaults = ctx.defaults;
+  req.interceptors = ctx.interceptors;
+
+  // Factory for creating new instances off of this one
+  req.create = function createFrom(instanceConfig) {
+    return Axios.create(mergeConfig(ctx.defaults, instanceConfig || {}));
   };
 
   return req;
@@ -177,64 +265,25 @@ Axios.spread = function spread(callback) {
 Axios.isCancel = AxiosError.isCancel;
 Axios.isAxiosError = AxiosError.isAxiosError;
 
-// ── toFormData ───────────────────────────────────────────────────
-// Axios 1.x exposes axios.toFormData(). We provide a lightweight shim.
+// ── form helpers (Axios 1.x) ─────────────────────────────────────
 
-Axios.toFormData = function toFormData(data, formData) {
-  if (typeof FormData === 'undefined') {
-    throw new Error('FormData is not supported in this environment');
-  }
-  const fd = formData || new FormData();
-
-  if (!data || typeof data !== 'object') return fd;
-
-  const append = function (key, val) {
-    if (val === undefined) return;
-    if (Array.isArray(val)) {
-      val.forEach(function (v, i) { append(key + '[' + i + ']', v); });
-    } else if (val instanceof Blob) {
-      fd.append(key, val, val.name || 'blob');
-    } else {
-      fd.append(key, val);
-    }
-  };
-
-  for (const key of Object.keys(data)) {
-    append(key, data[key]);
-  }
-
-  return fd;
-};
-
-// ── formToJSON (Axios 1.x) ──────────────────────────────────────
+Axios.toFormData = toFormData;
 
 Axios.formToJSON = function formToJSON(formData) {
-  const obj = {};
-  if (typeof FormData === 'undefined' || !(formData instanceof FormData)) {
-    return obj;
-  }
-  formData.forEach(function (val, key) {
-    if (obj[key]) {
-      if (!Array.isArray(obj[key])) obj[key] = [obj[key]];
-      obj[key].push(val);
-    } else {
-      obj[key] = val;
-    }
-  });
-  return obj;
-};
-
-// ── getUri (returns the built URL without dispatching) ──────────
-
-Axios.prototype.getUri = function getUri(config) {
-  config = mergeConfig(this.defaults, config);
-  return buildURL(
-    config.baseURL ? combineURLs(config.baseURL, config.url) : config.url,
-    config.params,
-    config.paramsSerializer
-  );
+  return formDataToJSON(formData) || {};
 };
 
 // ── Exports ──────────────────────────────────────────────────────
+
+Axios.AxiosHeaders = AxiosHeaders;
+Axios.AxiosError = AxiosError;
+Axios.CanceledError = CanceledError;
+Axios.Cancel = CanceledError;
+Axios.CancelToken = CancelToken;
+Axios.mergeConfig = mergeConfig;
+Axios.defaults = defaults;
+
+// isPlainObject is re-exported for parity with axios' internal utils surface
+Axios.isPlainObject = isPlainObject;
 
 module.exports = Axios;

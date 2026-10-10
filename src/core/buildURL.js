@@ -1,55 +1,59 @@
 /**
- * buildURL, combineURLs, isURLSameOrigin — all matching
- * Axios helper behaviour so that interceptors & defaults feel native.
+ * buildURL / combineURLs / buildFullPath / isURLSameOrigin — matching the
+ * Axios helpers so URLs, params and interceptors behave natively.
  */
 'use strict';
 
-const { forEach, isURLSearchParams, trim } = require('../helpers/utils');
+const AxiosURLSearchParams = require('./AxiosURLSearchParams');
+const { isURLSearchParams, isString } = require('../helpers/utils');
 
 /**
- * Build a full URL by appending serialized params to baseURL + url.
+ * Default encoder: replaces `:`, `$`, `,`, `+`, `[` and `]` with their
+ * (partially) URI-encoded counterparts — identical to Axios.
+ */
+function encode(val) {
+  return encodeURIComponent(val)
+    .replace(/%3A/gi, ':')
+    .replace(/%24/g, '$')
+    .replace(/%2C/gi, ',')
+    .replace(/%20/g, '+')
+    .replace(/%5B/gi, '[')
+    .replace(/%5D/gi, ']');
+}
+
+/**
+ * Build a URL by appending serialized params to the end.
  *
- * @param {string}      url
- * @param {Object|null} params
- * @param {Function}    [paramsSerializer] - Custom serializer (must return string).
+ * @param {string} url
+ * @param {object} [params]
+ * @param {?object|Function} [options] `{encode, serialize, indexes}` or a
+ *        bare serialize function (legacy axios form).
  * @returns {string}
  */
-function buildURL(url, params, paramsSerializer) {
+function buildURL(url, params, options) {
   if (!params) return url;
+
+  // axios accepts both `paramsSerializer: fn` and `paramsSerializer: {serialize}`
+  if (isString(options) || typeof options === 'function') {
+    options = { serialize: options };
+  }
+
+  const _encode = (options && options.encode) || encode;
+  const serializeFn = options && options.serialize;
 
   let serializedParams;
 
-  if (paramsSerializer) {
-    serializedParams = paramsSerializer(params);
-  } else if (isURLSearchParams(params)) {
-    serializedParams = params.toString();
+  if (serializeFn) {
+    serializedParams = serializeFn(params, options);
   } else {
-    const parts = [];
-
-    forEach(params, function serialize(val, key) {
-      if (val === null || typeof val === 'undefined') return;
-
-      if (Array.isArray(val)) {
-        key = key + '[]';
-      } else {
-        val = [val];
-      }
-
-      forEach(val, function serializeValue(v) {
-        if (isDate(v)) {
-          v = v.toISOString();
-        } else if (isPlainObject(v)) {
-          v = JSON.stringify(v);
-        }
-        parts.push(encode(key) + '=' + encode(v));
-      });
-    });
-
-    serializedParams = parts.join('&');
+    serializedParams = isURLSearchParams(params)
+      ? params.toString()
+      : new AxiosURLSearchParams(params, options).toString(_encode);
   }
 
   if (serializedParams) {
     const hashmarkIndex = url.indexOf('#');
+
     if (hashmarkIndex !== -1) {
       url = url.slice(0, hashmarkIndex);
     }
@@ -69,6 +73,21 @@ function combineURLs(baseURL, relativeURL) {
 }
 
 /**
+ * Combines the baseURL with the requestedURL *only* when the requestedURL is
+ * not already absolute. Fixes `baseURL + 'https://other.host/x'` mangling.
+ */
+function buildFullPath(baseURL, requestedURL) {
+  if (baseURL && !isAbsoluteURL(requestedURL)) {
+    return combineURLs(baseURL, requestedURL);
+  }
+  return requestedURL;
+}
+
+function isAbsoluteURL(url) {
+  return /^([a-z][a-z\d+\-.]*:)?\/\//i.test(String(url));
+}
+
+/**
  * Check if the URL has the same origin as the current page.
  * Falls back to true in Node / environments without location.
  */
@@ -82,31 +101,10 @@ function isURLSameOrigin(requestURL) {
   }
 }
 
-// --- internal helpers ---
-
-function encode(str) {
-  return encodeURIComponent(str)
-    .replace(/%3A/gi, ':')
-    .replace(/%24/g, '$')
-    .replace(/%2C/gi, ',')
-    .replace(/%20/g, '+')
-    .replace(/%5B/gi, '[')
-    .replace(/%5D/gi, ']');
-}
-
-function isDate(val) {
-  return val !== null && Object.prototype.toString.call(val) === '[object Date]' && !isNaN(val.getTime());
-}
-
-function isPlainObject(val) {
-  if (typeof val !== 'object' || val === null) return false;
-  if (Object.prototype.toString.call(val) !== '[object Object]') return false;
-  const proto = Object.getPrototypeOf(val);
-  return proto === null || proto === Object.prototype;
-}
-
 module.exports = {
   buildURL,
   combineURLs,
+  buildFullPath,
   isURLSameOrigin,
+  isAbsoluteURL,
 };

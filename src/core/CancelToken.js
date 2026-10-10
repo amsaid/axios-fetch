@@ -1,8 +1,8 @@
 /**
  * CancelToken - Imperative cancellation token (Axios pre-v0.22 API).
  *
- * Provides `new CancelToken(executor)` where executor receives a
- * `cancel(message)` function and a `reason` getter.
+ * Ported from `axios/lib/cancel/CancelToken.js`: `subscribe()` now returns an
+ * unsubscribe function and `toAbortSignal()` bridges it to AbortController.
  */
 'use strict';
 
@@ -10,6 +10,10 @@ const CanceledError = require('./CanceledError');
 
 class CancelToken {
   constructor(executor) {
+    if (typeof executor !== 'function') {
+      throw new TypeError('executor must be a function.');
+    }
+
     let resolvePromise;
     this.promise = new Promise(function promiseExecutor(resolve) {
       resolvePromise = resolve;
@@ -17,45 +21,45 @@ class CancelToken {
 
     const token = this;
 
-    // eslint-disable-next-line func-names
-    this.promise.then(function (cancel) {
+    this.promise.then(function onCancel(cancel) {
       if (!token._listeners) return;
+
       let i = token._listeners.length;
+
       while (i-- > 0) {
         token._listeners[i](cancel);
       }
       token._listeners = null;
     });
 
-    if (typeof executor === 'function') {
-      executor(function cancel(message, config, request) {
-        if (token.reason) return;             // already cancelled
-        token.reason = new CanceledError(message, config, request);
-        resolvePromise(token.reason);
-      });
-    }
+    // allow `.then()` consumers to opt out via `promise.cancel()`
+    this.promise.then = function (onfulfilled) {
+      let _resolve;
+      const promise = new Promise((resolve) => {
+        token.subscribe(resolve);
+        _resolve = resolve;
+      }).then(onfulfilled);
+
+      promise.cancel = function reject() {
+        token.unsubscribe(_resolve);
+      };
+
+      return promise;
+    };
+
+    executor(function cancel(message, config, request) {
+      if (token.reason) {
+        // Cancellation has already been requested
+        return;
+      }
+
+      token.reason = new CanceledError(message, config, request);
+      resolvePromise(token.reason);
+    });
   }
 
   /**
-   * Subscribe to cancellation.
-   * @param {Function} listener - Called with the CanceledError.
-   * @throws if already cancelled.
-   */
-  subscribe(listener) {
-    if (this.reason) {
-      listener(this.reason);
-      return;
-    }
-    if (this._listeners) {
-      this._listeners.push(listener);
-    } else {
-      this._listeners = [listener];
-    }
-  }
-
-  /**
-   * Throw if this token is already cancelled.
-   * Instance method (matches Axios API: token.throwIfRequested()).
+   * Throws a `CanceledError` if cancellation has been requested.
    */
   throwIfRequested() {
     if (this.reason) {
@@ -64,18 +68,57 @@ class CancelToken {
   }
 
   /**
-   * Static: throw if token is already cancelled.
-   * @param {CancelToken} token
+   * Subscribe to the cancel signal.
+   * @returns {Function} unsubscribe callback
    */
-  static throwIfRequested(token) {
-    if (token && token.reason) {
-      throw token.reason;
+  subscribe(listener) {
+    if (this.reason) {
+      listener(this.reason);
+      return function () {};
+    }
+
+    if (this._listeners) {
+      this._listeners.push(listener);
+    } else {
+      this._listeners = [listener];
+    }
+
+    return this.unsubscribe.bind(this);
+  }
+
+  /**
+   * Remove a previously registered listener.
+   */
+  unsubscribe(listener) {
+    if (!this._listeners) return;
+
+    const index = this._listeners.indexOf(listener);
+    if (index !== -1) {
+      this._listeners.splice(index, 1);
     }
   }
 
   /**
-   * Return a source object with a `token` and an `abort` function,
-   * mirroring `CancelToken.source()` from Axios.
+   * Bridge this CancelToken to an AbortSignal so it can be composed with
+   * `config.signal` and `config.timeout`.
+   */
+  toAbortSignal() {
+    const controller = new AbortController();
+
+    const abort = (err) => {
+      controller.abort(err);
+    };
+
+    this.subscribe(abort);
+
+    controller.signal.unsubscribe = () => this.unsubscribe(abort);
+
+    return controller.signal;
+  }
+
+  /**
+   * Returns an object that contains a new `CancelToken` and a function that,
+   * when called, cancels the `CancelToken`.
    */
   static source() {
     let cancel;
@@ -83,6 +126,15 @@ class CancelToken {
       cancel = c;
     });
     return { token, cancel };
+  }
+
+  /**
+   * Throw if the given token has already been cancelled.
+   */
+  static throwIfRequested(token) {
+    if (token && token.reason) {
+      throw token.reason;
+    }
   }
 }
 

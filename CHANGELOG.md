@@ -5,6 +5,75 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.0] - 2026-10-10
+
+A large Axios 1.x parity pass. `mergeConfig`, header handling and the request
+pipeline were reworked to match `axios` exactly; several long-standing bugs were fixed.
+
+### Added
+- **Axios 1.x API surface**
+  - `axios.request()` (was missing entirely), plus `request()` on created instances
+  - `instance.create()` for deriving new instances
+  - `postForm` / `putForm` / `patchForm` aliases (send `multipart/form-data`)
+  - `axios.VERSION`, `axios.Cancel` (alias of `CanceledError`)
+  - `AxiosHeaders` class: `set`/`get`/`has`/`delete`/`clear`/`normalize`/`concat`/`toJSON`,
+    case-insensitive lookup, content-type/length accessors, `Symbol.iterator`
+  - `responseType: 'stream'` now returns a `ReadableStream`
+  - `transitional: { silentJSONParsing, forcedJSONParsing, clarifyTimeoutError }`
+  - `withXSRFToken` option
+  - `maxContentLength` / `maxBodyLength` are now enforced
+  - `paramsSerializer` object form `{ serialize, encode, indexes }`
+  - `AxiosError` code constants (`ERR_BAD_OPTION_VALUE`, `ERR_BAD_RESPONSE`, `ETIMEDOUT`, …),
+    an `isAxiosError` marker and a `status` field
+  - `CancelToken#toAbortSignal()`, `subscribe()` returns an unsubscribe function,
+    `unsubscribe()` method
+  - Interceptor options `{ synchronous, runWhen }`
+  - `toFormData` supports nested keys, `[]` arrays, Blob values and meta tokens;
+    `formToJSON` understands `a[b][c]` and `a[]` keys
+  - `env: { FormData, Blob }` alongside `formSerializer`
+- **Pipeline**
+  - `core/dispatchRequest.js` — transforms now run on both the success and error paths
+  - `helpers/trackStream.js`, `composeSignals.js`, `progressEventReducer.js`,
+    `speedometer.js`, `throttle.js`, `toFormData.js`, `formDataToJSON.js`, `parseHeaders.js`
+  - `core/AxiosURLSearchParams.js`, `core/buildFullPath.js`, `core/defaults.js`, `src/version.js`
+- **Tests** — 106 interoperability tests (up from 69), including a deterministic local
+  HTTP server, progress, streaming, limits and Axios 1.x feature coverage
+
+### Fixed
+- **`baseURL` no longer corrupts absolute URLs** (`http://host/x` is left untouched)
+- **`onUploadProgress` actually fires** — the request was previously built before the
+  tracking stream was attached, so the callback was never invoked. It now works for
+  `Blob`, `File` and `FormData` bodies too
+- **`timeout` now works when a `signal` is provided** (previously the abort went to an
+  unused controller). `signal`, `cancelToken` and `timeout` are composed
+- Aborting via `signal`/`timeout` now rejects with a `CanceledError`
+- **`config.headers` is flattened to `AxiosHeaders`** after interceptors, so
+  `response.config.headers.get(...)` works like Axios
+- `mergeConfig` no longer injects `DEFAULTS` into every call and **replaces** (instead of
+  concatenating) `transformRequest`/`transformResponse` — the default JSON transform no
+  longer runs two to three times per request
+- `transformResponse` runs on error responses, so `error.response.data` is parsed
+- `FormData` bodies are sent as `multipart/form-data` **with a boundary** (previously the
+  body was multipart-encoded but labelled `application/x-www-form-urlencoded`)
+- `onDownloadProgress` no longer breaks `blob`/`formData`/`stream` response types
+- `AxiosError.from()` no longer throws (`Class constructor … cannot be invoked without 'new'`)
+- `mergeConfig` treats `method`/`url`/`data`/`responseType` as config2-only, matching Axios
+- Absolute-URL detection, error codes (`ERR_BAD_OPTION_VALUE`, `ERR_BAD_RESPONSE`) and
+  timeout messages now match Axios
+
+### Changed
+- **The TypeScript declarations were rewritten** using real ES module exports. The previous
+  file did not compile (`export =` + `declare const`/`declare namespace` cannot merge);
+  it is now strict-mode clean under `node`, `node16` and `nodenext` resolution
+- `axios.defaults` now includes per-method header buckets and `transitional`, matching Axios
+  (`responseType` still defaults to `'json'` — see README parity notes)
+- Request interceptors run LIFO and response interceptors FIFO (Axios order)
+- `README.md` rewritten for the new API surface and limitations
+- Bundle size: ~96 KB CJS/UMD, ~96 KB ESM
+
+### Removed
+- Dead `HEADER_NAME_REGEX`/manual JSON parsing code paths superseded by the Axios pipeline
+
 ## [0.0.8] - 2026-04-08
 
 ### Added
@@ -117,6 +186,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - 58 interoperability tests
 - UMD + ESM bundles
 
+[0.1.0]: https://github.com/amsaid/axios-fetch/releases/tag/v0.1.0
 [0.0.8]: https://github.com/amsaid/axios-fetch/releases/tag/v0.0.8
 [0.0.7]: https://github.com/amsaid/axios-fetch/releases/tag/v0.0.7
 [0.0.6]: https://github.com/amsaid/axios-fetch/releases/tag/v0.0.6

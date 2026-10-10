@@ -25,16 +25,29 @@ function getVersion() {
 
 const files = [
   'src/helpers/utils.js',
+  'src/helpers/parseHeaders.js',
+  'src/helpers/speedometer.js',
+  'src/helpers/throttle.js',
+  'src/helpers/progressEventReducer.js',
+  'src/helpers/trackStream.js',
+  'src/helpers/composeSignals.js',
+  'src/helpers/toFormData.js',
+  'src/helpers/formDataToJSON.js',
   'src/core/AxiosError.js',
+  'src/core/AxiosHeaders.js',
   'src/core/CanceledError.js',
   'src/core/CancelToken.js',
   'src/core/InterceptorManager.js',
+  'src/core/AxiosURLSearchParams.js',
   'src/core/buildURL.js',
   'src/core/transformData.js',
+  'src/core/defaults.js',
   'src/core/mergeConfig.js',
   'src/core/settle.js',
   'src/adapters/fetch.js',
+  'src/core/dispatchRequest.js',
   'src/Axios.js',
+  'src/version.js',
   'src/index.js',
 ];
 
@@ -44,6 +57,12 @@ const moduleNames = [];
 for (const rel of files) {
   const full = join(root, rel);
   let src = readFileSync(full, 'utf-8');
+
+  // Inline the real version from package.json
+  if (rel === 'src/version.js') {
+    src = `'use strict';\n\nmodule.exports = ${JSON.stringify(getVersion())};\n`;
+  }
+
   modules[rel] = src;
   moduleNames.push(rel);
 }
@@ -150,7 +169,7 @@ function __require(id) {
 
     code += `const __entry = __require(${JSON.stringify('src/index.js')});\n`;
     code += `export default __entry;\n`;
-    code += `export const { Axios, AxiosError, CanceledError, CancelToken, mergeConfig, all, spread, isCancel, isAxiosError, toFormData, formToJSON } = __entry;\n`;
+    code += `export const { Axios, AxiosError, AxiosHeaders, CanceledError, CancelToken, mergeConfig, all, spread, isCancel, isAxiosError, toFormData, formToJSON, VERSION } = __entry;\n`;
   }
 
   return code;

@@ -23,6 +23,7 @@
 'use strict';
 
 const path = require('path');
+const http = require('http');
 const axios = require(path.resolve(__dirname, '..', 'dist', 'sd-axios-fetch.js'));
 
 // ── Minimal test harness ──────────────────────────────────────────
@@ -51,7 +52,7 @@ function assert(condition, msg) {
 function assertEqual(actual, expected, label) {
   if (actual !== expected) {
     throw new Error(
-      `${label || ''} expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`
+      `${label || ''} expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`,
     );
   }
 }
@@ -66,8 +67,80 @@ function assertIncludes(obj, key, label) {
 
 const API = 'https://jsonplaceholder.typicode.com';
 
+// ── Local test server (deterministic, offline-capable) ─────────────
+// Used for timeout / progress / maxContentLength / headers tests so the
+// suite does not depend on network timing.
+const local = { server: null, base: '', requests: [] };
+
+function startLocalServer() {
+  return new Promise((resolve) => {
+    const server = http.createServer((req, res) => {
+      const chunks = [];
+      req.on('data', (c) => chunks.push(c));
+      req.on('end', () => {
+        const body = Buffer.concat(chunks).toString();
+        const u = new URL(req.url, 'http://localhost');
+        const p = u.pathname;
+        local.requests.push({ url: req.url, method: req.method, headers: req.headers, body });
+
+        if (p === '/json') {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ id: 7, ok: true }));
+        } else if (p === '/text') {
+          res.writeHead(200, { 'Content-Type': 'text/plain' });
+          res.end('plain text');
+        } else if (p === '/badjson') {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end('{not json');
+        } else if (p === '/echo') {
+          res.writeHead(200, { 'Content-Type': 'application/json', 'X-Echo': 'yes' });
+          res.end(JSON.stringify({
+            method: req.method,
+            contentType: req.headers['content-type'] || null,
+            authorization: req.headers.authorization || null,
+            accept: req.headers.accept || null,
+            intercept: req.headers['x-intercept'] || null,
+            body,
+          }));
+        } else if (p === '/binary') {
+          const buf = Buffer.from([1, 2, 3, 4, 5, 250]);
+          res.writeHead(200, { 'Content-Type': 'application/octet-stream', 'Content-Length': buf.length });
+          res.end(buf);
+        } else if (p === '/setcookie') {
+          res.writeHead(200, { 'Set-Cookie': ['a=1', 'b=2'], 'Content-Type': 'application/json' });
+          res.end('{"c":1}');
+        } else if (p === '/big') {
+          const buf = Buffer.alloc(64 * 1024, 65);
+          res.writeHead(200, { 'Content-Type': 'text/plain', 'Content-Length': buf.length });
+          res.end(buf);
+        } else if (p === '/slow') {
+          setTimeout(() => {
+            if (res.writableEnded) return;
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end('{"slow":true}');
+          }, 300);
+        } else if (p.startsWith('/status/')) {
+          res.writeHead(Number(p.split('/')[2]), { 'Content-Type': 'application/json' });
+          res.end('{"status":true}');
+        } else {
+          res.writeHead(404, { 'Content-Type': 'application/json' });
+          res.end('{"nf":true}');
+        }
+      });
+    });
+
+    server.listen(0, '127.0.0.1', () => {
+      local.server = server;
+      local.base = `http://127.0.0.1:${server.address().port}`;
+      resolve();
+    });
+  });
+}
+
 async function run() {
   console.log('\nsd-axios-fetch — Interoperability Test Suite\n');
+
+  await startLocalServer();
 
   // ═══════════════════════════════════════════════════════════════
   // 1. API surface & statics
@@ -108,10 +181,38 @@ async function run() {
 
   await test('axios has defaults', () => {
     assertIncludes(axios, 'defaults');
-    assertEqual(axios.defaults.method, 'get');
+    assertEqual(axios.defaults.method, undefined, 'defaults.method (resolved per-request)');
     assertEqual(axios.defaults.responseType, 'json');
     assertEqual(axios.defaults.timeout, 0);
     assertIncludes(axios.defaults.headers, 'common');
+    // Axios 1.x parity: per-method header buckets + transitional defaults
+    ['get', 'post', 'put', 'patch', 'delete', 'head'].forEach((m) => {
+      assertIncludes(axios.defaults.headers, m);
+    });
+    assertEqual(axios.defaults.transitional.silentJSONParsing, true);
+    assertEqual(axios.defaults.transitional.forcedJSONParsing, true);
+    assertEqual(axios.defaults.transitional.clarifyTimeoutError, false);
+    assert(typeof axios.defaults.validateStatus === 'function');
+    assert(Array.isArray(axios.defaults.transformRequest));
+    assert(Array.isArray(axios.defaults.transformResponse));
+  });
+
+  await test('axios exposes axios 1.x statics', () => {
+    assert(typeof axios.VERSION === 'string', 'VERSION');
+    assert(typeof axios.AxiosHeaders === 'function', 'AxiosHeaders');
+    assertEqual(axios.Cancel, axios.CanceledError, 'Cancel === CanceledError');
+    assertEqual(typeof axios.request, 'function');
+    assertEqual(typeof axios.postForm, 'function');
+  });
+
+  await test('AxiosError exposes code constants and isAxiosError marker', () => {
+    assertEqual(axios.AxiosError.ERR_BAD_REQUEST, 'ERR_BAD_REQUEST');
+    assertEqual(axios.AxiosError.ERR_BAD_OPTION_VALUE, 'ERR_BAD_OPTION_VALUE');
+    assertEqual(axios.AxiosError.ERR_NETWORK, 'ERR_NETWORK');
+    assertEqual(axios.AxiosError.ERR_CANCELED, 'ERR_CANCELED');
+    assertEqual(axios.AxiosError.ETIMEDOUT, 'ETIMEDOUT');
+    const err = new axios.AxiosError('x', 'ERR_NETWORK', {}, null, null);
+    assertEqual(err.isAxiosError, true, 'prototype isAxiosError flag');
   });
 
   // ═══════════════════════════════════════════════════════════════
@@ -152,15 +253,13 @@ async function run() {
   });
 
   await test('GET with responseType text', async () => {
-    // responseType 'text' causes the adapter to read the body as text.
-    // The default transformResponse then attempts JSON parsing.
-    // Since the API returns valid JSON, data becomes a parsed object.
+    // Axios parity: responseType 'text' disables the default JSON parse, so
+    // `data` stays a raw string.
     const res = await axios.get(`${API}/posts/1`, {
       responseType: 'text',
     });
-    // After default transformResponse, the JSON string is parsed to an object
-    assert(typeof res.data === 'object', 'data should be parsed JSON object');
-    assertEqual(res.data.id, 1);
+    assertEqual(typeof res.data, 'string', 'data should be a raw string');
+    assertEqual(JSON.parse(res.data).id, 1);
   });
 
   await test('GET with responseType arraybuffer', async () => {
@@ -331,7 +430,7 @@ async function run() {
   await test('interceptor rejection handles errors', async () => {
     const inst = axios.create({ baseURL: API });
     inst.interceptors.request.use(
-      (config) => Promise.reject(new Error('blocked'))
+      (_config) => Promise.reject(new Error('blocked')),
     );
 
     let caught = false;
@@ -371,7 +470,7 @@ async function run() {
       (err) => {
         errorInterceptorFired = true;
         return Promise.reject(err);
-      }
+      },
     );
 
     try {
@@ -518,41 +617,48 @@ async function run() {
   console.log('\n── Timeout ──────────────────────────────────────');
 
   await test('timeout triggers ECONNABORTED error', async () => {
-    // Use an unreachable IP that will hang and trigger timeout
     try {
-      await axios.get('http://10.255.255.1/', {
-        timeout: 200,
-      });
+      await axios.get(`${local.base}/slow`, { timeout: 80 });
       assert(false, 'should have timed out');
     } catch (err) {
       assert(axios.isAxiosError(err));
-      // Could be ECONNABORTED (timeout) or ERR_NETWORK (unreachable)
-      assert(err.code === 'ECONNABORTED' || err.code === 'ERR_NETWORK',
-        'expected timeout or network error, got: ' + err.code);
+      assertEqual(err.code, 'ECONNABORTED');
+      assertEqual(err.message, 'timeout of 80ms exceeded');
     }
   });
 
   await test('custom timeoutErrorMessage', async () => {
     const msg = 'CUSTOM TIMEOUT MESSAGE';
     try {
-      // Use an unreachable IP that will hang and trigger timeout
-      // Note: This test may be flaky depending on network configuration
-      await axios.get('http://10.255.255.1/', {
-        timeout: 200,
-        timeoutErrorMessage: msg,
+      await axios.get(`${local.base}/slow`, { timeout: 80, timeoutErrorMessage: msg });
+      assert(false, 'should have timed out');
+    } catch (err) {
+      assert(axios.isAxiosError(err), 'should be an AxiosError');
+      assertEqual(err.code, 'ECONNABORTED');
+      assertEqual(err.message, msg);
+    }
+  });
+
+  await test('transitional.clarifyTimeoutError switches to ETIMEDOUT', async () => {
+    try {
+      await axios.get(`${local.base}/slow`, {
+        timeout: 80,
+        transitional: { clarifyTimeoutError: true },
       });
       assert(false, 'should have timed out');
     } catch (err) {
-      // On timeout or network failure, the error should be an AxiosError
-      assert(axios.isAxiosError(err), 'should be an AxiosError');
-      // Accept either custom message or network error (depends on OS routing)
-      const isTimeoutOrNetwork = 
-        err.message === msg || 
-        err.code === 'ECONNABORTED' || 
-        err.code === 'ERR_NETWORK' ||
-        err.code === 'ENETUNREACH';
-      assert(isTimeoutOrNetwork, 
-        'expected timeout or network error, got: ' + err.code + ' - ' + err.message);
+      assertEqual(err.code, 'ETIMEDOUT');
+    }
+  });
+
+  await test('timeout still works when a signal is supplied', async () => {
+    // Regression: previously a provided `signal` silently disabled `timeout`.
+    const controller = new AbortController();
+    try {
+      await axios.get(`${local.base}/slow`, { timeout: 80, signal: controller.signal });
+      assert(false, 'should have timed out');
+    } catch (err) {
+      assertEqual(err.code, 'ECONNABORTED');
     }
   });
 
@@ -566,7 +672,7 @@ async function run() {
     let requestTransformed = false;
 
     inst.defaults.transformRequest = [
-      function (data, headers) {
+      function (data, _headers) {
         requestTransformed = true;
         // Don't mutate the data, just test that we got called
         return data;
@@ -578,16 +684,13 @@ async function run() {
     assertEqual(res.status, 201);
   });
 
-  await test('custom transformResponse', async () => {
-    // In Axios, user transforms are appended AFTER defaults (defaults run first,
-    // then user transforms). To prevent default JSON parsing, pass only the
-    // user's transform which overwrites defaults when provided alone.
+  await test('custom transformResponse receives the raw body (replaces defaults)', async () => {
+    // Axios parity: a per-request transformResponse REPLACES the default chain,
+    // so it receives the raw string body.
     const res = await axios.get(`${API}/posts/1`, {
       responseType: 'text',
       transformResponse: [
         function (data) {
-          // Default transform already parsed JSON (data is now an object)
-          // because defaults run first. Our transform wraps the result.
           return { wrapped: data, meta: 'test' };
         },
       ],
@@ -595,9 +698,22 @@ async function run() {
     assertIncludes(res.data, 'meta');
     assertEqual(res.data.meta, 'test');
     assertIncludes(res.data, 'wrapped');
-    // wrapped is the parsed JSON object (since default transform ran first)
-    assert(typeof res.data.wrapped === 'object', 'wrapped should be the parsed JSON object');
-    assertEqual(res.data.wrapped.id, 1);
+    assertEqual(typeof res.data.wrapped, 'string', 'wrapped should be the raw string');
+    assertEqual(JSON.parse(res.data.wrapped).id, 1);
+  });
+
+  await test('async transforms are supported', async () => {
+    const res = await axios.post(`${local.base}/echo`,
+      { title: 'async' },
+      {
+        transformRequest: [async (data) => JSON.stringify({ ...data, added: 1 })],
+        transformResponse: [async (data) => ({ ...JSON.parse(data), async: true })],
+      },
+    );
+    const sent = JSON.parse(res.data.body);
+    assertEqual(sent.title, 'async');
+    assertEqual(sent.added, 1);
+    assertEqual(res.data.async, true);
   });
 
   // ═══════════════════════════════════════════════════════════════
@@ -649,9 +765,8 @@ async function run() {
   });
 
   await test('Content-Type is set automatically for POST JSON', async () => {
-    // Use a response interceptor to check the final config headers
-    // (the default transformRequest sets Content-Type: application/json)
-    let capturedContentType = null;
+    // Check that the default transformRequest sets Content-Type: application/json
+    // by verifying the request succeeded (which means the body was valid JSON)
     const res = await axios.post(`${API}/posts`, { title: 'test' });
     // Check that the default transformRequest would have set Content-Type
     // by verifying the request succeeded (which means the body was valid JSON)
@@ -675,7 +790,7 @@ async function run() {
   await test('mergeConfig deep-merges headers', () => {
     const c = axios.mergeConfig(
       { headers: { common: { Accept: 'text/html' }, 'X-Base': 'true' } },
-      { headers: { 'X-Req': 'yes' } }
+      { headers: { 'X-Req': 'yes' } },
     );
     assertEqual(c.headers['X-Base'], 'true');
     assertEqual(c.headers['X-Req'], 'yes');
@@ -816,13 +931,13 @@ async function run() {
     }
   });
 
-  await test('invalid responseType throws ERR_BAD_OPTION', async () => {
+  await test('invalid responseType throws ERR_BAD_OPTION_VALUE', async () => {
     try {
       await axios.get(`${API}/posts/1`, { responseType: 'invalid_type' });
       assert(false, 'should have thrown');
     } catch (err) {
       assert(axios.isAxiosError(err));
-      assertEqual(err.code, 'ERR_BAD_OPTION');
+      assertEqual(err.code, 'ERR_BAD_OPTION_VALUE');
     }
   });
 
@@ -847,13 +962,15 @@ async function run() {
     });
 
     await inst.get('/posts/1');
-    assert(capturedConfig.headers.common['X-Common-Header'] === 'common-value');
+    // Axios parity: headers are flattened into an AxiosHeaders instance.
+    assert(capturedConfig.headers instanceof axios.AxiosHeaders);
+    assertEqual(capturedConfig.headers['X-Common-Header'], 'common-value');
+    assertEqual(capturedConfig.headers.get('x-common-header'), 'common-value');
   });
 
   await test('method-specific headers override common headers', async () => {
     const inst = axios.create({ baseURL: API });
     inst.defaults.headers.common['Accept'] = 'application/json';
-    // Initialize method-specific headers (they don't exist by default)
     inst.defaults.headers.post = { 'Content-Type': 'application/x-www-form-urlencoded' };
 
     let capturedConfig = null;
@@ -863,7 +980,13 @@ async function run() {
     });
 
     await inst.post('/posts', { title: 'test' });
-    assert(capturedConfig.headers.post['Content-Type'] === 'application/x-www-form-urlencoded');
+    assertEqual(capturedConfig.headers.get('Content-Type'), 'application/x-www-form-urlencoded');
+    assertEqual(capturedConfig.headers.get('Accept'), 'application/json');
+  });
+
+  await test('response.config.headers reflects the sent headers', async () => {
+    const res = await axios.get(`${local.base}/json`, { headers: { 'X-Test': 'yes' } });
+    assertEqual(res.config.headers.get('X-Test'), 'yes');
   });
 
   await test('toFormData converts object to FormData', () => {
@@ -934,12 +1057,314 @@ async function run() {
     });
 
     await inst.get('/posts/1');
-    assertEqual(order.join(','), 'req1,req2,res1,res2');
+    // Axios parity: request interceptors run LIFO, response interceptors FIFO.
+    assertEqual(order.join(','), 'req2,req1,res1,res2');
+  });
+
+  await test('interceptors support synchronous + runWhen options', async () => {
+    const inst = axios.create({ baseURL: API });
+    const order = [];
+
+    inst.interceptors.request.use((config) => {
+      order.push('a');
+      return config;
+    }, null, { runWhen: () => false });          // skipped
+
+    inst.interceptors.request.use((config) => {
+      order.push('sync');
+      return config;
+    }, null, { synchronous: true });
+
+    await inst.get('/posts/1');
+    assertEqual(order.join(','), 'sync');
+  });
+
+  // ═══════════════════════════════════════════════════════════════
+  // 21. axios 1.x parity features
+  // ═══════════════════════════════════════════════════════════════
+  console.log('\n── Axios 1.x Parity Features ────────────────────');
+
+  await test('axios.request(config) works', async () => {
+    const res = await axios.request({ url: `${local.base}/json`, method: 'get' });
+    assertEqual(res.status, 200);
+    assertEqual(res.data.id, 7);
+  });
+
+  await test('instance.request() and instance.create() work', async () => {
+    const inst = axios.create({ baseURL: local.base });
+    assertEqual(typeof inst.request, 'function');
+    assertEqual(typeof inst.create, 'function');
+
+    const res = await inst.request({ url: '/json' });
+    assertEqual(res.data.id, 7);
+
+    const nested = inst.create({ headers: { 'X-Nested': '1' } });
+    const res2 = await nested.get('/json');
+    assertEqual(res2.data.id, 7);
+    assertEqual(nested.defaults.headers['X-Nested'], '1');
+  });
+
+  await test('absolute URLs ignore baseURL', async () => {
+    const inst = axios.create({ baseURL: 'http://127.0.0.1:1' });
+    const res = await inst.get(`${local.base}/json`);
+    assertEqual(res.data.id, 7);
+  });
+
+  await test('AxiosHeaders get/has/delete/normalize/concat/toJSON', () => {
+    const H = axios.AxiosHeaders;
+    const h = new H({ 'Content-Type': 'application/json', 'X-A': '1' });
+    assertEqual(h.get('content-type'), 'application/json');
+    assertEqual(h.has('X-A'), true);
+    assertEqual(h.has('X-Missing'), false);
+    h.set('X-B', '2');
+    assertEqual(h.get('x-b'), '2');
+    assertEqual(h.delete('X-A'), true);
+    assertEqual(h.has('X-A'), false);
+
+    const joined = h.toJSON();
+    assertEqual(joined['Content-Type'], 'application/json');
+
+    const merged = H.concat(new H({ A: '1' }), { B: '2' }, new H({ C: '3' }));
+    assertEqual(merged.get('a'), '1');
+    assertEqual(merged.get('b'), '2');
+    assertEqual(merged.get('c'), '3');
+
+    const upper = new H({ 'x-lower': 'v' }).normalize(true);
+    assertEqual(upper['X-Lower'], 'v');
+  });
+
+  await test('response.headers is an AxiosHeaders with case-insensitive get()', async () => {
+    const res = await axios.get(`${local.base}/echo`);
+    assert(res.headers instanceof axios.AxiosHeaders);
+    assertEqual(res.headers.get('x-echo'), 'yes');
+    assertEqual(res.headers['x-echo'], 'yes');
+  });
+
+  await test('repeated Set-Cookie headers are preserved as an array', async () => {
+    const res = await axios.get(`${local.base}/setcookie`);
+    assert(Array.isArray(res.headers['set-cookie']), 'set-cookie should be an array');
+    assertEqual(res.headers['set-cookie'].length, 2);
+  });
+
+  await test('responseType: stream returns a ReadableStream', async () => {
+    const res = await axios.get(`${local.base}/big`, { responseType: 'stream' });
+    assert(typeof res.data.getReader === 'function', 'should be a web ReadableStream');
+    const reader = res.data.getReader();
+    const { value } = await reader.read();
+    assert(value && value.length > 0, 'should read a chunk');
+    await reader.cancel();
+  });
+
+  await test('arraybuffer and blob responseTypes work', async () => {
+    const ab = await axios.get(`${local.base}/binary`, { responseType: 'arraybuffer' });
+    assert(ab.data instanceof ArrayBuffer, 'arraybuffer should be an ArrayBuffer');
+    assertEqual(ab.data.byteLength, 6);
+
+    const bl = await axios.get(`${local.base}/binary`, { responseType: 'blob' });
+    assert(bl.data instanceof Blob, 'blob should be a Blob');
+    assertEqual(bl.data.size, 6);
+  });
+
+  await test('paramsSerializer object form ({ serialize, encode })', () => {
+    const inst = axios.create({ baseURL: 'https://example.com' });
+    const uri = inst.getUri({
+      url: '/x',
+      params: { a: 1, b: 2 },
+      paramsSerializer: { serialize: (p) => new URLSearchParams(p).toString() },
+    });
+    assertEqual(uri, 'https://example.com/x?a=1&b=2');
+  });
+
+  await test('paramsSerializer encode option is honoured', () => {
+    const inst = axios.create({ baseURL: 'https://example.com' });
+    const uri = inst.getUri({
+      url: '/x',
+      params: { q: 'a b' },
+      paramsSerializer: { encode: (v) => encodeURIComponent(v) },
+    });
+    assertEqual(uri, 'https://example.com/x?q=a%20b');
+  });
+
+  await test('nested params are serialized like axios', () => {
+    const inst = axios.create({ baseURL: 'https://example.com' });
+    const uri = inst.getUri({ url: '/x', params: { a: { b: 1 }, list: [1, 2] } });
+    assert(uri.includes('a%5Bb%5D=1') || uri.includes('a[b]=1'), 'nested object key: ' + uri);
+    assert(uri.includes('list[]=1') && uri.includes('list[]=2'), 'array params: ' + uri);
+  });
+
+  await test('maxContentLength is enforced', async () => {
+    try {
+      await axios.get(`${local.base}/big`, { maxContentLength: 1024 });
+      assert(false, 'should have thrown');
+    } catch (err) {
+      assert(axios.isAxiosError(err));
+      assertEqual(err.code, 'ERR_BAD_RESPONSE');
+      assert(err.message.includes('maxContentLength'), err.message);
+    }
+  });
+
+  await test('maxBodyLength is enforced', async () => {
+    try {
+      await axios.post(`${local.base}/echo`, { big: 'x'.repeat(5000) }, { maxBodyLength: 100 });
+      assert(false, 'should have thrown');
+    } catch (err) {
+      assert(axios.isAxiosError(err));
+      assertEqual(err.code, 'ERR_BAD_REQUEST');
+      assert(err.message.includes('maxBodyLength'), err.message);
+    }
+  });
+
+  await test('onDownloadProgress reports loaded/total/download', async () => {
+    let last = null;
+    await axios.get(`${local.base}/big`, {
+      onDownloadProgress: (p) => { last = p; },
+    });
+    assert(last, 'progress should have fired');
+    assertEqual(last.loaded, 64 * 1024);
+    assertEqual(last.total, 64 * 1024);
+    assertEqual(last.lengthComputable, true);
+    assertEqual(last.download, true);
+    assert(typeof last.bytes === 'number');
+  });
+
+  await test('onUploadProgress fires for JSON bodies', async () => {
+    let last = null;
+    const res = await axios.post(`${local.base}/echo`, { a: 'x'.repeat(20000) }, {
+      onUploadProgress: (p) => { last = p; },
+    });
+    assert(last, 'upload progress should have fired');
+    assertEqual(last.upload, true);
+    assert(last.loaded > 0, 'loaded bytes should be reported');
+    assertEqual(res.data.method, 'POST');
+  });
+
+  await test('onUploadProgress fires for FormData bodies', async () => {
+    let last = null;
+    const fd = new FormData();
+    fd.append('file', new Blob(['x'.repeat(5000)]), 'f.txt');
+    const res = await axios.post(`${local.base}/echo`, fd, {
+      onUploadProgress: (p) => { last = p; },
+    });
+    assert(last, 'upload progress should have fired');
+    assertEqual(last.upload, true);
+    assert(res.data.contentType.indexOf('multipart/form-data') === 0,
+      'Content-Type must be multipart with boundary, got: ' + res.data.contentType);
+  });
+
+  await test('FormData is sent as multipart/form-data', async () => {
+    const fd = new FormData();
+    fd.append('x', 'y');
+    const res = await axios.post(`${local.base}/echo`, fd);
+    assert(res.data.contentType.indexOf('multipart/form-data') === 0, res.data.contentType);
+    assert(res.data.body.includes('name="x"'));
+  });
+
+  await test('postForm() sets multipart/form-data', async () => {
+    const res = await axios.postForm(`${local.base}/echo`, { a: 'b' });
+    assert(res.data.contentType.indexOf('multipart/form-data') === 0, res.data.contentType);
+  });
+
+  await test('transitional.silentJSONParsing=false throws on malformed JSON', async () => {
+    try {
+      await axios.get(`${local.base}/badjson`, {
+        transitional: { silentJSONParsing: false, forcedJSONParsing: true },
+      });
+      assert(false, 'should have thrown');
+    } catch (err) {
+      assert(axios.isAxiosError(err));
+      assertEqual(err.code, 'ERR_BAD_RESPONSE');
+    }
+  });
+
+  await test('malformed JSON is silently ignored by default', async () => {
+    const res = await axios.get(`${local.base}/badjson`);
+    assertEqual(res.data, '{not json');
+  });
+
+  await test('basic auth produces an Authorization header', async () => {
+    const res = await axios.get(`${local.base}/echo`, {
+      auth: { username: 'user', password: 'pass' },
+    });
+    assertEqual(res.data.authorization, 'Basic ' + Buffer.from('user:pass').toString('base64'));
+  });
+
+  await test('mergeConfig does not inject DEFAULTS', () => {
+    const c = axios.mergeConfig({ baseURL: 'x' }, { timeout: 5 });
+    assertEqual(c.baseURL, 'x');
+    assertEqual(c.timeout, 5);
+    assertEqual(c.transformRequest, undefined, 'should not inject defaults');
+    assertEqual(c.headers, undefined, 'should not inject defaults');
+  });
+
+  await test('mergeConfig replaces (not concatenates) transforms', () => {
+    const a = () => {};
+    const b = () => {};
+    const c = axios.mergeConfig({ transformRequest: [a] }, { transformRequest: [b] });
+    assertEqual(c.transformRequest.length, 1);
+    assertEqual(c.transformRequest[0], b);
+  });
+
+  await test('CancelToken.toAbortSignal() bridges to AbortSignal', async () => {
+    const source = axios.CancelToken.source();
+    const signal = source.token.toAbortSignal();
+    assertEqual(signal.aborted, false);
+    source.cancel('stop');
+    await new Promise((r) => setTimeout(r, 0));   // listeners fire on a microtask
+    assertEqual(signal.aborted, true);
+  });
+
+  await test('CancelToken subscribe() returns an unsubscribe function', () => {
+    const source = axios.CancelToken.source();
+    let called = 0;
+    const unsub = source.token.subscribe(() => { called++; });
+    unsub();
+    source.cancel('nope');
+    assertEqual(called, 0);
+  });
+
+  await test('axios.Cancel === axios.CanceledError', () => {
+    assertEqual(axios.Cancel, axios.CanceledError);
+  });
+
+  await test('formToJSON understands nested keys', () => {
+    const fd = new FormData();
+    fd.append('a[b]', '1');
+    fd.append('list[]', 'x');
+    fd.append('list[]', 'y');
+    const obj = axios.formToJSON(fd);
+    assertEqual(obj.a.b, '1');
+    assert(Array.isArray(obj.list));
+    assertEqual(obj.list.length, 2);
+  });
+
+  await test('toFormData renders nested keys and arrays', () => {
+    const fd = axios.toFormData({ a: { b: 1 }, list: ['x', 'y'] });
+    assertEqual(fd.get('a[b]'), '1');
+    assertEqual(fd.getAll('list[]').join(','), 'x,y');
+  });
+
+  await test('HEAD returns an empty body', async () => {
+    const res = await axios.head(`${local.base}/json`);
+    assertEqual(res.status, 200);
+    assert(res.data === '' || res.data === null || res.data === undefined);
+  });
+
+  await test('request interceptors can use AxiosHeaders API', async () => {
+    const inst = axios.create({ baseURL: local.base });
+    inst.interceptors.request.use((config) => {
+      config.headers.set('X-Intercept', 'value');
+      return config;
+    });
+    const res = await inst.get('/echo');
+    assertEqual(res.data.intercept, 'value');
+    assertEqual(res.data.accept, 'application/json, text/plain, */*');
   });
 
   // ═══════════════════════════════════════════════════════════════
   // Summary
   // ═══════════════════════════════════════════════════════════════
+  local.server && local.server.close();
+
   console.log('\n' + '═'.repeat(52));
   console.log(`  Total: ${passed + failed}  |  Passed: ${passed}  |  Failed: ${failed}`);
   console.log('═'.repeat(52));

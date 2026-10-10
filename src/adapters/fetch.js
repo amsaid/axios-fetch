@@ -1,25 +1,44 @@
 /**
  * Fetch Adapter — the bridge between Axios config objects and native fetch().
  *
+ * Mirrors `axios/lib/adapters/fetch.js` and adds the network-error
+ * classification this library is known for.
+ *
  * Responsibilities:
- *  1. Build the Request URL (baseURL + url + params)
+ *  1. Build the full URL (baseURL + url + params)
  *  2. Resolve authentication (Basic auth → Authorization header)
- *  3. Fetch XSRF token from cookies when appropriate
- *  4. Execute fetch() with the correct options
- *  5. Handle timeout via AbortController
- *  6. Dispatch onUploadProgress / onDownloadProgress (real-time via streams)
- *  7. Parse response body according to responseType
- *  8. Construct an Axios-compatible response object
- *  9. Return a Promise that resolves/rejects via settle()
+ *  3. Fetch the XSRF token from cookies when appropriate
+ *  4. Compose the abort signal (signal + cancelToken + timeout)
+ *  5. Execute fetch() with the correct options
+ *  6. Dispatch onUploadProgress / onDownloadProgress via stream tracking
+ *  7. Parse the response body according to responseType
+ *  8. Construct an Axios-compatible response object and settle the promise
  */
 'use strict';
 
-const { buildURL, combineURLs } = require('../core/buildURL');
-const settle         = require('../core/settle');
-const transformData  = require('../core/transformData');
-const AxiosError     = require('../core/AxiosError');
-const CanceledError  = require('../core/CanceledError');
-const { isFormData, isBlob, isFile, isURLSearchParams, isString, isArrayBuffer } = require('../helpers/utils');
+const { buildURL, buildFullPath, isURLSameOrigin } = require('../core/buildURL');
+const settle        = require('../core/settle');
+const AxiosError    = require('../core/AxiosError');
+const CanceledError = require('../core/CanceledError');
+const AxiosHeaders  = require('../core/AxiosHeaders');
+const composeSignals = require('../helpers/composeSignals');
+const trackStream    = require('../helpers/trackStream');
+const {
+  progressEventReducer,
+  progressEventDecorator,
+  asyncDecorator,
+} = require('../helpers/progressEventReducer');
+const {
+  isArrayBuffer,
+  isArrayBufferView,
+  isBlob,
+  isFileList,
+  isFormData,
+  isFunction,
+  isReadableStream,
+  isString,
+  isURLSearchParams,
+} = require('../helpers/utils');
 
 // ── Polyfills for Node.js < 16 ──────────────────────────────────
 // btoa/atob are global in browsers and Node.js >= 16
@@ -34,10 +53,80 @@ if (typeof globalThis.atob === 'undefined' && typeof Buffer !== 'undefined') {
   };
 }
 
-// ── Environment detection ───────────────────────────────────────
-const isBrowser = typeof window !== 'undefined' && typeof window.document !== 'undefined';
-const isNode = typeof process !== 'undefined' && process.versions && process.versions.node;
-const nodeVersion = isNode ? parseInt(process.versions.node.split('.')[0], 10) : 0;
+// ── Environment detection ────────────────────────────────────────
+const isFetchSupported = typeof fetch === 'function' && typeof Request === 'function' &&
+  typeof Response === 'function';
+const isReadableStreamSupported = isFetchSupported && typeof ReadableStream === 'function';
+
+const DEFAULT_CHUNK_SIZE = 64 * 1024;
+
+const test = (fn, ...args) => {
+  try {
+    return !!fn(...args);
+  } catch (e) {
+    return false;
+  }
+};
+
+const supportsRequestStream = isReadableStreamSupported && test(() => {
+  let duplexAccessed = false;
+
+  const hasContentType = new Request('http://localhost', {
+    body: new ReadableStream(),
+    method: 'POST',
+    get duplex() {
+      duplexAccessed = true;
+      return 'half';
+    },
+  }).headers.has('Content-Type');
+
+  return duplexAccessed && !hasContentType;
+});
+
+const supportsResponseStream = isReadableStreamSupported &&
+  test(() => isReadableStream(new Response('').body));
+
+const encodeText = isFetchSupported && (typeof TextEncoder === 'function' ?
+  ((encoder) => (str) => encoder.encode(str))(new TextEncoder()) :
+  async (str) => new Uint8Array(await new Response(str).arrayBuffer()));
+
+/**
+ * Response body resolvers, one per Axios responseType.
+ * Axios performs a case-insensitive lookup (`utils.findKey`); keys here are
+ * already lowercased and `responseType` is lowercased before lookup.
+ */
+const resolvers = {
+  stream: supportsResponseStream && ((res) => res.body),
+};
+
+if (isFetchSupported) {
+  ['text', 'arraybuffer', 'blob', 'formdata'].forEach((type) => {
+    const methodName = type === 'arraybuffer' ? 'arrayBuffer'
+      : type === 'formdata' ? 'formData'
+        : type;
+
+    resolvers[type] = isFunction(Response.prototype[methodName])
+      ? (res) => res[methodName]()
+      : (_, config) => {
+        throw new AxiosError(`Response type '${type}' is not supported`, AxiosError.ERR_NOT_SUPPORT, config);
+      };
+  });
+
+  // `responseType: 'response'` yields the raw Response object (as Axios' xhr adapter does).
+  resolvers.response = (res) => res;
+}
+
+/**
+ * Pick the resolver for a responseType, falling back to text for unknown
+ * types (`json` included — JSON parsing happens in transformResponse).
+ */
+function resolveResponseHandler(responseType) {
+  return resolvers[responseType] || resolvers.text;
+}
+
+const VALID_RESPONSE_TYPES = ['arraybuffer', 'blob', 'document', 'json', 'text', 'stream', 'formdata', 'response', ''];
+
+const VALID_PROTOCOLS = ['http:', 'https:', 'data:', 'blob:'];
 
 /**
  * Read a cookie by name (browser only; no-op in Node).
@@ -45,629 +134,411 @@ const nodeVersion = isNode ? parseInt(process.versions.node.split('.')[0], 10) :
 function readCookie(name) {
   if (typeof document === 'undefined') return null;
   const match = document.cookie.match(
-    new RegExp('(^|;\\s*)(' + encodeURIComponent(name) + ')=([^;]*)')
+    new RegExp('(^|;\\s*)(' + encodeURIComponent(name) + ')=([^;]*)'),
   );
   return match ? decodeURIComponent(match[3]) : null;
 }
 
 /**
- * Dispatch a request using the Fetch API.
- *
- * @param {Object} config - Fully-merged Axios config.
- * @returns {Promise<Object>} AxiosResponse-shaped object.
+ * Determine the number of bytes the request body will produce.
  */
-module.exports = function fetchAdapter(config) {
-  return new Promise(function dispatchFetchRequest(resolve, reject) {
-    let request;
-    let signal;
-    let timeoutId;
+async function getBodyLength(body) {
+  if (body == null) return 0;
 
-    // ── Input validation & security ──────────────────────────────
-    // Validate URL to prevent injection attacks
-    const rawUrl = config.baseURL ? combineURLs(config.baseURL, config.url) : config.url;
-    if (!rawUrl || typeof rawUrl !== 'string') {
-      reject(AxiosError.badConfig('"url" must be a non-empty string', config));
-      return;
-    }
+  if (isBlob(body)) return body.size;
 
-    // Reject URLs with dangerous protocols
-    try {
-      const parsed = new URL(rawUrl, 'http://base');
-      const protocol = parsed.protocol.toLowerCase();
-      if (!['http:', 'https:', 'data:', 'blob:'].includes(protocol)) {
-        reject(AxiosError.badConfig(`Unsupported protocol: ${protocol}`, config));
-        return;
-      }
-    } catch (e) {
-      // If URL parsing fails, continue and let fetch() handle it
-    }
-
-    // Validate timeout is a positive number
-    if (config.timeout !== undefined && (typeof config.timeout !== 'number' || config.timeout < 0)) {
-      reject(AxiosError.badConfig('"timeout" must be a non-negative number', config));
-      return;
-    }
-
-    // Validate responseType
-    const VALID_RESPONSE_TYPES = ['arraybuffer', 'blob', 'document', 'json', 'text', 'stream', 'formData', ''];
-    if (config.responseType !== undefined && !VALID_RESPONSE_TYPES.includes(config.responseType)) {
-      reject(AxiosError.badConfig(`Invalid responseType: ${config.responseType}`, config));
-      return;
-    }
-
-    // Sanitize headers - reject headers with invalid characters
-    if (config.headers) {
-      const HEADER_NAME_REGEX = /^[\^_`a-zA-Z\-0-9!#$%&'*+|~]+$/;
-      for (const [key, val] of Object.entries(flattenHeaders(config.headers, config.method))) {
-        if (!HEADER_NAME_REGEX.test(key)) {
-          reject(AxiosError.badConfig(`Invalid header name: ${key}`, config));
-          return;
-        }
-        if (typeof val === 'string' && /[\r\n]/.test(val)) {
-          reject(AxiosError.badConfig(`Invalid header value for ${key}: contains CR/LF`, config));
-          return;
-        }
-      }
-    }
-
-    // ── Build URL ────────────────────────────────────────────────
-    let fullPath = buildURL(rawUrl, config.params, config.paramsSerializer);
-
-    // ── Headers ──────────────────────────────────────────────────
-    // Flatten Axios-style headers (common + method-specific + direct keys)
-    const requestHeaders = flattenHeaders(config.headers, config.method);
-
-    // Flatten content-type convenience
-    if (config.contentType) {
-      requestHeaders['Content-Type'] = config.contentType;
-      delete config.contentType;
-    }
-
-    // Remove content-type for FormData (browser sets boundary automatically)
-    if (isFormData(config.data)) {
-      delete requestHeaders['Content-Type'];
-      delete requestHeaders['content-type'];
-    }
-
-    // ── XSRF ─────────────────────────────────────────────────────
-    // XSRF only works in browsers with document.cookie access
-    if (isNode) {
-      // Silently skip in Node.js (no cookies to read)
-    } else if (
-      (config.withCredentials || isURLSameOrigin(fullPath)) &&
-      config.xsrfCookieName &&
-      config.xsrfHeaderName
-    ) {
-      const xsrfValue = readCookie(config.xsrfCookieName);
-      if (xsrfValue) {
-        requestHeaders[config.xsrfHeaderName] = xsrfValue;
-      }
-    }
-
-    // ── Basic Auth ───────────────────────────────────────────────
-    if (config.auth) {
-      const username = config.auth.username || '';
-      const password = config.auth.password || '';
-      requestHeaders['Authorization'] = 'Basic ' + btoa(username + ':' + password);
-    }
-
-    // ── Request body ─────────────────────────────────────────────
-    let body = config.data;
-
-    // Apply transformRequest chain
-    body = transformData(body, config.transformRequest, requestHeaders);
-
-    // Stringify non-string body if not already a supported type
-    if (body !== undefined && body !== null && !isFormData(body) && !isBlob(body) && !isFile(body) && !isURLSearchParams(body) && !isArrayBuffer(body) && typeof body !== 'string') {
-      body = JSON.stringify(body);
-    }
-
-    // ── Abort / cancel signal ────────────────────────────────────
-    const controller = new AbortController();
-
-    // 1) Prefer explicit signal (AbortController / AbortSignal)
-    if (config.signal) {
-      signal = config.signal;
-    } else if (config.cancelToken) {
-      // 2) Axios CancelToken → wire to AbortController
-      config.cancelToken.throwIfRequested();
-      config.cancelToken.subscribe(function (cancel) {
-        controller.abort(cancel);
-        reject(cancel);       // reject the outer promise
-      });
-      signal = controller.signal;
-    } else {
-      signal = controller.signal;
-    }
-
-    // ── Timeout ──────────────────────────────────────────────────
-    if (config.timeout && config.timeout > 0) {
-      timeoutId = setTimeout(function () {
-        controller.abort();
-      }, config.timeout);
-    }
-
-    // ── fetch options ────────────────────────────────────────────
-    const fetchMethod = config.method ? config.method.toUpperCase() : 'GET';
-    const fetchOptions = {
-      method: fetchMethod,
-      headers: normalizeHeadersForFetch(requestHeaders),
-      signal,
-    };
-
-    // GET/HEAD requests MUST NOT have a body (Node.js fetch / undici enforces this)
-    if (body !== undefined && body !== null && body !== '' && fetchMethod !== 'GET' && fetchMethod !== 'HEAD') {
-      fetchOptions.body = body;
-    }
-
-    // withCredentials
-    if (config.withCredentials) {
-      fetchOptions.credentials = 'include';
-    }
-
-    // redirect policy
-    if (config.maxRedirects === 0) {
-      fetchOptions.redirect = 'manual';
-    } else if (config.maxRedirects === -1) {
-      fetchOptions.redirect = 'follow';
-    }
-
-    // cache mode (mirrors Axios cache option)
-    if (config.cache !== undefined) {
-      fetchOptions.cache = config.cache;
-    }
-
-    // mode (cors / same-origin / navigate)
-    if (config.mode) {
-      fetchOptions.mode = config.mode;
-    }
-
-    // referrer
-    if (config.referrer) {
-      fetchOptions.referrer = config.referrer;
-    }
-
-    // referrerPolicy
-    if (config.referrerPolicy) {
-      fetchOptions.referrerPolicy = config.referrerPolicy;
-    }
-
-    // decompress (Note: fetch auto-decompresses; this is a no-op in most environments)
-    if (config.decompress === false) {
-      // Fetch API doesn't support manual decompress; warn in Node.js
-      if (isNode && nodeVersion >= 18) {
-        console.warn('[sd-axios-fetch] decompress: false is not supported by the Fetch API. Response will be auto-decompressed.');
-      }
-    }
-
-    // ── Execute ──────────────────────────────────────────────────
-    request = new Request(fullPath, fetchOptions);
-
-    const startTime = Date.now();
-
-    // ── Upload progress tracking ─────────────────────────────────
-    let uploadProgressPromise = null;
-    if (typeof config.onUploadProgress === 'function' && body && typeof body === 'string') {
-      // For string bodies, we can track upload progress via ReadableStream
-      const bodyBytes = new TextEncoder().encode(body);
-      const total = bodyBytes.length;
-      let loaded = 0;
-
-      const stream = new ReadableStream({
-        start(controller) {
-          // Send in chunks (16KB at a time)
-          const chunkSize = 16 * 1024;
-          let offset = 0;
-
-          function push() {
-            if (offset >= bodyBytes.length) {
-              controller.close();
-              return;
-            }
-            const chunk = bodyBytes.slice(offset, offset + chunkSize);
-            offset += chunk.length;
-            loaded = offset;
-
-            // Report progress
-            config.onUploadProgress({
-              loaded,
-              total,
-              progress: total ? loaded / total : 0,
-              bytes: chunk.length,
-              rate: 0,
-              estimated: 0,
-              lengthComputable: true,
-              upload: true,
-            });
-
-            controller.enqueue(chunk);
-            // Use setTimeout to allow progress events to fire
-            setTimeout(push, 0);
-          }
-
-          push();
-        },
-      });
-
-      fetchOptions.body = stream;
-      uploadProgressPromise = Promise.resolve();
-    }
-
-    fetch(request)
-      .then(function handleResponse(response) {
-        if (timeoutId) clearTimeout(timeoutId);
-
-        // ── Construct raw AxiosResponse shape ──────────────────────
-        const resHeaders = responseHeadersToObject(response.headers);
-
-        // ── Download progress tracking via ReadableStream ──────────
-        const contentLength = response.headers.get('content-length');
-        const totalBytes = contentLength ? parseInt(contentLength, 10) : 0;
-
-        // For progress tracking, we need to read the stream manually
-        if (typeof config.onDownloadProgress === 'function' && response.body && typeof response.body.getReader === 'function') {
-          return trackDownloadProgress(response, config, resHeaders, startTime, request, settle, resolve, reject);
-        }
-
-        // Fallback: no progress tracking, read body directly
-        return readResponseBody(response, config, resHeaders, startTime, request, settle, resolve, reject);
-      })
-      .catch(function handleError(err) {
-        if (timeoutId) clearTimeout(timeoutId);
-
-        // ── Normalise error types ──────────────────────────────────
-        if (err instanceof CanceledError || AxiosError.isCancel(err)) {
-          reject(err);
-          return;
-        }
-
-        if (err.name === 'AbortError' || err.type === 'aborted' || err.code === 'ERR_ABORTED') {
-          const elapsed = Date.now() - startTime;
-          if (config.timeout > 0 && elapsed >= config.timeout - 5) {
-            const message = config.timeoutErrorMessage || `timeout of ${config.timeout}ms exceeded`;
-            reject(new AxiosError(message, 'ECONNABORTED', config, request, null));
-          } else {
-            reject(AxiosError.cancel('Request aborted', config, request));
-          }
-          return;
-        }
-
-        // Network / other fetch errors — improve error code detection
-        reject(classifyNetworkError(err, config, request));
-      });
-
-    // If we created an upload progress stream, wait for it before fetch
-    if (uploadProgressPromise) {
-      uploadProgressPromise.catch(() => {}); // ignore errors here
-    }
-  });
-};
-
-/**
- * Track download progress by reading the response body as a ReadableStream.
- */
-function trackDownloadProgress(response, config, resHeaders, startTime, request, settle, resolve, reject) {
-  const contentLength = response.headers.get('content-length');
-  const total = contentLength ? parseInt(contentLength, 10) : 0;
-  let loaded = 0;
-  const chunks = [];
-
-  const reader = response.body.getReader();
-
-  function read() {
-    return reader.read().then(({ done, value }) => {
-      if (done) {
-        // Combine chunks
-        let responseData;
-        if (config.responseType === 'arraybuffer') {
-          responseData = concatChunks(chunks, loaded);
-        } else {
-          const decoder = new TextDecoder();
-          responseData = decoder.decode(concatChunks(chunks, loaded));
-        }
-
-        // Final progress event
-        if (typeof config.onDownloadProgress === 'function') {
-          config.onDownloadProgress({
-            loaded,
-            total,
-            progress: total ? loaded / total : 1,
-            bytes: 0,
-            rate: 0,
-            estimated: 0,
-            lengthComputable: !!total,
-            event: { lengthComputable: !!total, loaded, total },
-          });
-        }
-
-        // Process the response data
-        return processResponseData(responseData, response, config, resHeaders, startTime, request, settle, resolve, reject);
-      }
-
-      // Accumulate chunk
-      chunks.push(value);
-      loaded += value.length;
-
-      // Dispatch progress event
-      if (typeof config.onDownloadProgress === 'function') {
-        config.onDownloadProgress({
-          loaded,
-          total,
-          progress: total ? loaded / total : 0,
-          bytes: value.length,
-          rate: 0,
-          estimated: 0,
-          lengthComputable: !!total,
-          event: { lengthComputable: !!total, loaded, total },
-        });
-      }
-
-      return read();
-    });
+  if (isFormData(body) || isFileList(body)) {
+    const _request = new Request('http://localhost', { method: 'POST', body });
+    return (await _request.arrayBuffer()).byteLength;
   }
 
-  return read().catch(function handleError(err) {
-    if (err instanceof CanceledError || AxiosError.isCancel(err)) {
-      reject(err);
-      return;
-    }
-    reject(classifyNetworkError(err, config, request));
-  });
+  if (isArrayBufferView(body) || isArrayBuffer(body)) return body.byteLength;
+
+  if (isURLSearchParams(body)) body = body + '';
+
+  if (isString(body)) return (await encodeText(body)).byteLength;
+}
+
+async function resolveBodyLength(headers, body) {
+  const contentLength = headers.getContentLength
+    ? parseInt(headers.getContentLength(), 10) : NaN;
+
+  return isNaN(contentLength) ? getBodyLength(body) : contentLength;
 }
 
 /**
- * Concatenate Uint8Array chunks into a single ArrayBuffer or string.
+ * Convert a native `Headers` instance into an AxiosHeaders instance,
+ * preserving repeated `Set-Cookie` values as an array where possible.
  */
-function concatChunks(chunks, totalLength) {
-  const result = new Uint8Array(totalLength);
-  let offset = 0;
-  for (const chunk of chunks) {
-    result.set(chunk, offset);
-    offset += chunk.length;
-  }
-  return result.buffer;
-}
+function responseHeadersToAxiosHeaders(headers) {
+  const result = new AxiosHeaders();
 
-/**
- * Read response body without progress tracking (fast path).
- */
-function readResponseBody(response, config, resHeaders, startTime, request, settle, resolve, reject) {
-  let responsePromise;
-
-  switch (config.responseType) {
-    case 'arraybuffer':
-      responsePromise = response.arrayBuffer();
-      break;
-    case 'blob':
-      responsePromise = response.blob();
-      break;
-    case 'formData':
-      responsePromise = response.formData();
-      break;
-    case 'text':
-    case '':
-      responsePromise = response.text();
-      break;
-    case 'json':
-    default:
-      responsePromise = response.text();
-      break;
+  if (isString(headers)) {
+    const parseHeaders = require('../helpers/parseHeaders');
+    return AxiosHeaders.from(parseHeaders(headers));
   }
 
-  return responsePromise.then(function (responseData) {
-    return processResponseData(responseData, response, config, resHeaders, startTime, request, settle, resolve, reject);
-  });
-}
+  if (!headers) return result;
 
-/**
- * Process response data and settle the request.
- */
-function processResponseData(responseData, response, config, resHeaders, startTime, request, settle, resolve, reject) {
-  // ── transformResponse ────────────────────────────────────
-  let data = responseData;
-
-  // For 'json' (default), parse text → JSON before running transforms
-  if (config.responseType === 'json' || (config.responseType === undefined || config.responseType === '')) {
-    if (isString(data)) {
-      try { data = JSON.parse(data); } catch (_e) { /* keep as string */ }
+  if (isFunction(headers.getSetCookie)) {
+    const setCookies = headers.getSetCookie();
+    if (setCookies.length > 0) {
+      result.set('set-cookie', setCookies.length === 1 ? setCookies[0] : setCookies, true);
     }
-  } else if (config.responseType === 'arraybuffer' && responseData instanceof ArrayBuffer) {
-    // Already an ArrayBuffer, no transformation needed
-    data = responseData;
   }
 
-  // Skip transformResponse for binary types (arraybuffer, blob, formData)
-  const skipTransforms = (
-    config.responseType === 'arraybuffer' ||
-    config.responseType === 'blob' ||
-    config.responseType === 'formData'
-  );
-
-  if (!skipTransforms) {
-    data = transformData(data, config.transformResponse, resHeaders);
-  }
-
-  const elapsed = Date.now() - startTime;
-
-  const axiosResponse = {
-    data,
-    status: response.status,
-    statusText: response.statusText,
-    headers: resHeaders,
-    config,
-    request,
-    // Extra meta — non-standard but useful & harmless
-    _startTime: startTime,
-    _elapsed: elapsed,
-  };
-
-  settle(resolve, reject, axiosResponse, config);
-}
-
-/**
- * Classify network errors into more specific Axios error codes.
- */
-function classifyNetworkError(err, config, request) {
-  const message = err.message || err.toString();
-
-  // Timeout detection (check both message and elapsed time)
-  if (message.includes('timed out') || 
-      message.includes('ETIMEDOUT') || 
-      message.includes('fetch failed') && err.cause?.code === 'UND_ERR_SOCKET') {
-    return new AxiosError(
-      config.timeoutErrorMessage || `timeout of ${config.timeout}ms exceeded`,
-      'ECONNABORTED',
-      config,
-      request,
-      null
-    );
-  }
-
-  // Connection refused
-  if (message.includes('ECONNREFUSED') || message.includes('connection refused')) {
-    return new AxiosError('connect ECONNREFUSED', 'ECONNREFUSED', config, request, null);
-  }
-
-  // DNS resolution failure
-  if (message.includes('ENOTFOUND') || message.includes('getaddrinfo') || message.includes('dns')) {
-    return new AxiosError('getaddrinfo ENOTFOUND', 'ENOTFOUND', config, request, null);
-  }
-
-  // Network unreachable
-  if (message.includes('ENETUNREACH') || message.includes('network unreachable')) {
-    return new AxiosError('network is unreachable', 'ENETUNREACH', config, request, null);
-  }
-
-  // Certificate/SSL errors
-  if (message.includes('CERT_') || message.includes('certificate') || message.includes('ssl')) {
-    return new AxiosError(message, 'ERR_BAD_REQUEST', config, request, null);
-  }
-
-  // Generic network error
-  return AxiosError.fromError(err, config, request, null);
-}
-
-// ── Internal helpers ────────────────────────────────────────────────
-
-function isURLSameOrigin(url) {
-  if (typeof location === 'undefined') return true;
-  try {
-    const parsed = new URL(url);
-    return parsed.origin === location.origin;
-  } catch (_e) {
-    return true;
-  }
-}
-
-/**
- * Convert a Headers instance into a plain object (Axios-style).
- * Keys are normalised to Capitalized-Header-Name form.
- * Duplicate Set-Cookie headers are preserved as an array when possible.
- */
-function responseHeadersToObject(headers) {
-  const obj = {};
-
-  // The forEach on Headers yields lowercase keys in browsers
-  if (typeof Headers !== 'undefined' && headers instanceof Headers) {
-    // Modern browsers and Node.js 18+ support getSetCookie()
-    if (typeof headers.getSetCookie === 'function') {
-      const setCookies = headers.getSetCookie();
-      if (setCookies.length > 0) {
-        obj['Set-Cookie'] = setCookies.length === 1 ? setCookies[0] : setCookies;
-      }
-    }
-
-    headers.forEach(function (value, key) {
-      const normalizedName = formatHeaderName(key);
-      // Skip Set-Cookie (already handled above)
-      if (key === 'set-cookie') return;
-
-      // If header already exists, convert to array to preserve duplicates
-      if (obj[normalizedName] !== undefined) {
-        if (!Array.isArray(obj[normalizedName])) {
-          obj[normalizedName] = [obj[normalizedName]];
-        }
-        obj[normalizedName].push(value);
-      } else {
-        obj[normalizedName] = value;
-      }
+  if (typeof headers.forEach === 'function' && !Array.isArray(headers)) {
+    headers.forEach((value, key) => {
+      if (key.toLowerCase() === 'set-cookie') return;
+      result.set(key, value, true);
     });
   } else {
-    // Node http.IncomingHeaders – already a plain object
-    for (const key of Object.keys(headers || {})) {
-      obj[formatHeaderName(key)] = headers[key];
-    }
-  }
-
-  return obj;
-}
-
-/**
- * Capitalise header names the way Axios does: Content-Type, Accept, etc.
- */
-function formatHeaderName(str) {
-  return str
-    .split('-')
-    .map(function (seg) { return seg.charAt(0).toUpperCase() + seg.slice(1); })
-    .join('-');
-}
-
-/**
- * Convert a plain header object to a fetch-compatible structure.
- * Fetch accepts plain objects natively in modern browsers/Node ≥18.
- */
-function normalizeHeadersForFetch(headers) {
-  if (!headers) return {};
-  const out = {};
-  for (const key of Object.keys(headers)) {
-    if (headers[key] != null) {
-      out[key] = headers[key];
-    }
-  }
-  return out;
-}
-
-/**
- * Flatten Axios-style headers into a plain object.
- *
- * Axios supports three levels of headers:
- *   1. headers.common — applied to all methods
- *   2. headers[method] — applied to a specific method
- *   3. headers['Header-Name'] — direct header assignment
- *
- * This function merges them in order: common → method-specific → direct.
- *
- * @param {Object} headers - Axios headers object (may contain common/method keys).
- * @param {string} [method] - HTTP method (lowercase).
- * @returns {Object} Flattened headers ready for fetch.
- */
-function flattenHeaders(headers, method) {
-  if (!headers) return {};
-
-  const result = {};
-  const HTTP_METHODS = ['get', 'post', 'put', 'patch', 'delete', 'head', 'options'];
-
-  // 1. Start with 'common' headers
-  if (headers.common && typeof headers.common === 'object') {
-    Object.assign(result, headers.common);
-  }
-
-  // 2. Apply method-specific headers
-  if (method) {
-    const methodKey = method.toLowerCase();
-    if (headers[methodKey] && typeof headers[methodKey] === 'object') {
-      Object.assign(result, headers[methodKey]);
-    }
-  }
-
-  // 3. Apply direct headers (skip 'common' and HTTP method keys)
-  for (const key of Object.keys(headers)) {
-    if (key === 'common') continue;
-    if (HTTP_METHODS.includes(key.toLowerCase())) continue;
-    if (headers[key] != null) {
-      result[key] = headers[key];
+    for (const key of Object.keys(headers)) {
+      result.set(key, headers[key], true);
     }
   }
 
   return result;
 }
+
+/**
+ * Dispatch a request using the Fetch API.
+ *
+ * @param {Object} config - Fully-merged Axios config (already transformed).
+ * @returns {Promise<Object>} AxiosResponse-shaped object.
+ */
+async function fetchAdapter(config) {
+  if (!isFetchSupported) {
+    throw new AxiosError(
+      'Fetch API is not supported by this environment',
+      AxiosError.ERR_NOT_SUPPORT,
+      config,
+    );
+  }
+
+  // ── Input validation & security ────────────────────────────────────
+  const fullPath = buildFullPath(config.baseURL, config.url);
+
+  if (!fullPath || !isString(fullPath)) {
+    throw AxiosError.badConfig('"url" must be a non-empty string', config);
+  }
+
+  // Reject URLs with dangerous protocols
+  try {
+    const parsed = new URL(fullPath, 'http://base');
+    if (!VALID_PROTOCOLS.includes(parsed.protocol.toLowerCase())) {
+      throw AxiosError.badConfig(`Unsupported protocol: ${parsed.protocol}`, config);
+    }
+  } catch (e) {
+    if (e && e.isAxiosError) throw e;
+    // If URL parsing fails, continue and let fetch() handle it
+  }
+
+  // Validate timeout is a positive number
+  if (config.timeout !== undefined && (typeof config.timeout !== 'number' || config.timeout < 0)) {
+    throw AxiosError.badConfig('"timeout" must be a non-negative number', config);
+  }
+
+  // Validate responseType
+  let responseType = config.responseType ? String(config.responseType).toLowerCase() : '';
+
+  if (responseType && !VALID_RESPONSE_TYPES.includes(responseType)) {
+    throw new AxiosError(
+      'Unknown response type: ' + config.responseType,
+      AxiosError.ERR_BAD_OPTION_VALUE,
+      config,
+    );
+  }
+
+  // Work on a copy: auth / XSRF / FormData header fix-ups must not leak into
+  // `response.config.headers` (upstream axios applies them to a detached copy).
+  const headers = AxiosHeaders.concat(config.headers);
+
+  let data = config.data;
+
+  // Build the final URL with params
+  const url = buildURL(fullPath, config.params, config.paramsSerializer);
+
+  // ── HTTP basic authentication ──────────────────────────────────────
+  if (config.auth) {
+    headers.set('Authorization', 'Basic ' +
+      btoa((config.auth.username || '') + ':' + (config.auth.password ? unescape(encodeURIComponent(config.auth.password)) : '')),
+    );
+  }
+
+  // Let the runtime set the multipart boundary. If we keep the
+  // `application/x-www-form-urlencoded` header that dispatchRequest adds, the
+  // FormData body would be sent with a multipart boundary but the wrong type.
+  if (isFormData(data)) {
+    headers.setContentType(undefined);
+  }
+
+  // ── XSRF token (browser only) ─────────────────────────────────────
+  if (typeof document !== 'undefined' && typeof document.cookie !== 'undefined') {
+    let withXSRFToken = config.withXSRFToken;
+
+    if (withXSRFToken && isFunction(withXSRFToken)) {
+      withXSRFToken = withXSRFToken(config);
+    }
+
+    if (withXSRFToken || (withXSRFToken !== false && isURLSameOrigin(url))) {
+      const xsrfValue = config.xsrfHeaderName && config.xsrfCookieName &&
+        readCookie(config.xsrfCookieName);
+
+      if (xsrfValue) {
+        headers.set(config.xsrfHeaderName, xsrfValue);
+      }
+    }
+  }
+
+  // ── Abort / cancellation / timeout (composed) ─────────────────────
+  const composedSignal = composeSignals(
+    [config.signal, config.cancelToken && config.cancelToken.toAbortSignal()],
+    config.timeout,
+  );
+
+  const unsubscribe = composedSignal && composedSignal.unsubscribe && (() => {
+    composedSignal.unsubscribe();
+  });
+
+  let requestContentLength;
+  let request;
+
+  try {
+    const wantsUploadProgress = config.onUploadProgress && supportsRequestStream &&
+      config.method !== 'get' && config.method !== 'head';
+    const wantsBodyLength = (config.maxBodyLength === undefined ? -1 : config.maxBodyLength) > -1;
+
+    if ((wantsUploadProgress || wantsBodyLength) && data != null) {
+      requestContentLength = await resolveBodyLength(headers, data);
+    }
+
+    if (wantsUploadProgress && requestContentLength !== 0) {
+      const _request = new Request('http://localhost', { method: 'POST', body: data, duplex: 'half' });
+
+      const contentTypeHeader = _request.headers.get('content-type');
+
+      if (isFormData(data) && contentTypeHeader) {
+        headers.setContentType(contentTypeHeader);
+      }
+
+      if (_request.body) {
+        const [onProgress, flush] = progressEventDecorator(
+          requestContentLength,
+          progressEventReducer(asyncDecorator(config.onUploadProgress)),
+        );
+
+        data = trackStream(_request.body, DEFAULT_CHUNK_SIZE, onProgress, flush);
+      }
+    }
+
+    if (wantsBodyLength && requestContentLength > config.maxBodyLength) {
+      throw new AxiosError(
+        'Request body larger than maxBodyLength limit: ' + requestContentLength + ' > ' + config.maxBodyLength,
+        AxiosError.ERR_BAD_REQUEST,
+        config,
+      );
+    }
+
+    let withCredentials = config.withCredentials;
+    if (!isString(withCredentials)) {
+      withCredentials = withCredentials ? 'include' : 'omit';
+    }
+
+    const fetchOptions = buildFetchOptions(config, data, headers, withCredentials);
+
+    request = new Request(url, Object.assign(fetchOptions, {
+      signal: composedSignal,
+      method: config.method ? config.method.toUpperCase() : 'GET',
+      headers: headers.normalize().toJSON(),
+      body: data,
+      duplex: 'half',
+      credentials: 'credentials' in Request.prototype ? withCredentials : undefined,
+    }));
+
+    config.request = request;
+
+    const startTime = Date.now();
+    config.startTime = startTime;
+
+    let response = await fetch(request);
+
+    const isStreamResponse = supportsResponseStream && (responseType === 'stream' || responseType === 'response');
+
+    const maxContentLength = config.maxContentLength === -1 ? -1 : config.maxContentLength;
+
+    // Wrap the body when we need progress events, a stream response (so the
+    // caller can unsubscribe), or byte-limit enforcement.
+    if (supportsResponseStream && (config.onDownloadProgress || isStreamResponse || maxContentLength > -1)) {
+      const options = {};
+      ['status', 'statusText', 'headers'].forEach((prop) => {
+        options[prop] = response[prop];
+      });
+
+      const responseContentLength = parseInt(response.headers.get('content-length'), 10);
+      const total = isNaN(responseContentLength) ? null : responseContentLength;
+
+      const [onProgress, flush] = config.onDownloadProgress && progressEventDecorator(
+        total,
+        progressEventReducer(asyncDecorator(config.onDownloadProgress), true),
+      ) || [];
+
+      const guardedProgress = (onProgress || maxContentLength > -1) && ((loaded) => {
+        if (maxContentLength > -1 && loaded > maxContentLength) {
+          throw new AxiosError(
+            'maxContentLength size of ' + maxContentLength + ' exceeded',
+            AxiosError.ERR_BAD_RESPONSE,
+            config,
+          );
+        }
+        onProgress && onProgress(loaded);
+      });
+
+      response = new Response(
+        trackStream(response.body, DEFAULT_CHUNK_SIZE, guardedProgress, () => {
+          flush && flush();
+          unsubscribe && unsubscribe();
+        }),
+        options,
+      );
+    }
+
+    responseType = responseType || 'text';
+
+    const responseData = await resolveResponseHandler(responseType)(response, config);
+
+    !isStreamResponse && unsubscribe && unsubscribe();
+
+    const axiosResponse = {
+      data: responseData,
+      headers: responseHeadersToAxiosHeaders(response.headers),
+      status: response.status,
+      statusText: response.statusText,
+      config,
+      request,
+      // Non-standard extras (harmless additions)
+      _startTime: startTime,
+      _elapsed: Date.now() - startTime,
+    };
+
+    return await new Promise((resolve, reject) => {
+      settle(resolve, reject, axiosResponse);
+    });
+  } catch (err) {
+    unsubscribe && unsubscribe();
+
+    // Timeout / cancellation surfaced through the composed signal. This must
+    // be checked before `err.isAxiosError` because the abort reason *is* an
+    // AxiosError (ETIMEDOUT / CanceledError).
+    if (composedSignal && composedSignal.reason instanceof AxiosError) {
+      const reason = composedSignal.reason;
+      if (reason.code === AxiosError.ETIMEDOUT) {
+        throw AxiosError.timeout(config, config.request || request, config.timeoutErrorMessage);
+      }
+      throw reason;
+    }
+
+    if (err && err.isAxiosError) throw err;
+
+    if (err instanceof CanceledError || AxiosError.isCancel(err)) throw err;
+
+    if (err && err.name === 'AbortError') {
+      throw new CanceledError(null, config, config.request || request);
+    }
+
+    if (err && err.name === 'TypeError' && /fetch/i.test(err.message)) {
+      const axiosError = new AxiosError('Network Error', AxiosError.ERR_NETWORK, config, config.request);
+      axiosError.cause = err.cause || err;
+      throw classifyNetworkError(axiosError, err, config);
+    }
+
+    throw classifyNetworkError(AxiosError.from(err, err && err.code, config, config.request), err, config);
+  }
+}
+
+/**
+ * Fetch-only options mapped from the Axios config (mode, cache, redirect…).
+ */
+function buildFetchOptions(config, data, headers, withCredentials) {
+  const options = {};
+
+  if (withCredentials === 'include') {
+    options.credentials = 'include';
+  }
+
+  if (config.maxRedirects === 0) {
+    options.redirect = 'manual';
+  } else if (config.maxRedirects === -1) {
+    options.redirect = 'follow';
+  }
+
+  if (config.cache !== undefined) options.cache = config.cache;
+  if (config.mode) options.mode = config.mode;
+  if (config.referrer) options.referrer = config.referrer;
+  if (config.referrerPolicy) options.referrerPolicy = config.referrerPolicy;
+  if (config.integrity) options.integrity = config.integrity;
+  if (config.keepalive !== undefined) options.keepalive = config.keepalive;
+
+  // GET/HEAD requests MUST NOT have a body (fetch/undici enforce this)
+  const method = (config.method || 'get').toUpperCase();
+
+  if (data !== undefined && data !== null && data !== '' && method !== 'GET' && method !== 'HEAD') {
+    options.body = data;
+  }
+
+  return options;
+}
+
+/**
+ * Enrich a network error with a more specific code when we can tell what
+ * happened (this is an improvement over upstream Axios).
+ */
+function classifyNetworkError(axiosError, err, config) {
+  const cause = err && (err.cause || err);
+  const code = cause && cause.code;
+
+  switch (code) {
+    case 'ECONNREFUSED':
+    case 'ERR_CONNECTION_REFUSED':
+      axiosError.code = 'ECONNREFUSED';
+      axiosError.message = 'connect ECONNREFUSED';
+      break;
+    case 'ENOTFOUND':
+    case 'EAI_AGAIN':
+      axiosError.code = 'ENOTFOUND';
+      axiosError.message = 'getaddrinfo ENOTFOUND';
+      break;
+    case 'ENETUNREACH':
+      axiosError.code = 'ENETUNREACH';
+      axiosError.message = 'network is unreachable';
+      break;
+    case 'EHOSTUNREACH':
+      axiosError.code = 'EHOSTUNREACH';
+      axiosError.message = 'connect EHOSTUNREACH';
+      break;
+    case 'ETIMEDOUT':
+    case 'UND_ERR_CONNECT_TIMEOUT':
+    case 'UND_ERR_HEADERS_TIMEOUT':
+      axiosError.code = 'ECONNABORTED';
+      axiosError.message = `timeout of ${config.timeout}ms exceeded`;
+      break;
+    case 'UND_ERR_SOCKET':
+      axiosError.message = 'socket hang up';
+      break;
+    case 'CERT_HAS_EXPIRED':
+    case 'DEPTH_ZERO_SELF_SIGNED_CERT':
+    case 'SELF_SIGNED_CERT_IN_CHAIN':
+    case 'UNABLE_TO_VERIFY_LEAF_SIGNATURE':
+      axiosError.code = 'ERR_BAD_REQUEST';
+      break;
+    default:
+      break;
+  }
+
+  return axiosError;
+}
+
+module.exports = fetchAdapter;
+module.exports.supportsRequestStream = supportsRequestStream;
+module.exports.supportsResponseStream = supportsResponseStream;
+module.exports.isFetchSupported = isFetchSupported;
