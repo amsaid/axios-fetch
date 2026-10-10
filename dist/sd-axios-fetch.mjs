@@ -1,5 +1,5 @@
 /**
- * sd-axios-fetch v0.1.1
+ * sd-axios-fetch v0.1.2
  * A drop-in replacement for Axios.js built on the Fetch API.
  * (ESM bundle)  —  2026-10-10
  */
@@ -2332,19 +2332,27 @@ const test = (fn, ...args) => {
   }
 };
 
+/**
+ * Feature-detect streaming *request* bodies (needed for onUploadProgress).
+ *
+ * Axios only checks whether the runtime reads the `duplex` option. Some
+ * runtimes (notably Bun) ignore `duplex` but still accept a stream body, so we
+ * additionally accept a runtime that keeps the stream on `request.body`.
+ */
 const supportsRequestStream = isReadableStreamSupported && test(() => {
   let duplexAccessed = false;
 
-  const hasContentType = new Request('http://localhost', {
+  const request = new Request('http://localhost', {
     body: new ReadableStream(),
     method: 'POST',
     get duplex() {
       duplexAccessed = true;
       return 'half';
     },
-  }).headers.has('Content-Type');
+  });
 
-  return duplexAccessed && !hasContentType;
+  return !request.headers.has('Content-Type') &&
+    (duplexAccessed || isReadableStream(request.body));
 });
 
 const supportsResponseStream = isReadableStreamSupported &&
@@ -3174,7 +3182,7 @@ module.exports = Axios;
 
 // ── src/version.js ───────────────────────────────────────────
 __modules["src/version.js"] = function (require, module, exports) {
-module.exports = "0.1.1";
+module.exports = "0.1.2";
 };
 
 // ── src/index.js ───────────────────────────────────────────

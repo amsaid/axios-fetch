@@ -7,7 +7,7 @@ A zero-dependency, drop-in replacement for **[Axios](https://github.com/axios/ax
 - **~96 KB** single-file bundle (UMD + ESM, unminified)
 - **Zero dependencies** — uses only native `fetch`, `AbortController`, `Request`, `Headers`, `ReadableStream`
 - **Axios 1.x API compatible** — `request`, `get`, `post`, `put`, `patch`, `delete`, `head`, `options`, `postForm`/`putForm`/`patchForm`, `create`, interceptors, `AxiosHeaders`, `CancelToken`, `AbortController`, `all`/`spread`, transforms, timeout, progress, `mergeConfig`, `toFormData`/`formToJSON`
-- **107 passing interoperability tests**
+- **109 passing interoperability tests**
 - **Real-time progress tracking** — upload and download progress via `ReadableStream`
 - **TypeScript types** included (`dist/sd-axios-fetch.d.ts`, strict-mode clean)
 
@@ -234,8 +234,9 @@ await axios.post('/upload', formData, {
 ```
 
 Both callbacks receive Axios-shaped `AxiosProgressEvent` objects. Upload progress works for
-**string, JSON, Blob, File and FormData** bodies (via a streamed body); download progress
-works for every `responseType`.
+**string, JSON, Blob, File and FormData** bodies (via a streamed request body — requires a
+runtime with streaming request bodies, e.g. Node 18+ or Bun); download progress works for
+every `responseType`.
 
 ### Response Type
 

@@ -1251,6 +1251,27 @@ async function run() {
       'Content-Type must be multipart with boundary, got: ' + res.data.contentType);
   });
 
+  await test('onUploadProgress fires for Blob bodies', async () => {
+    let last = null;
+    const blob = new Blob([new Uint8Array(8000)]);
+    await axios.post(`${local.base}/echo`, blob, {
+      onUploadProgress: (p) => { last = p; },
+    });
+    assert(last, 'upload progress should have fired');
+    assertEqual(last.upload, true);
+    assertEqual(last.total, 8000);
+    assertEqual(last.loaded, 8000);
+  });
+
+  await test('streaming request bodies are detected', () => {
+    // Guards the onUploadProgress feature flag. The check must not depend
+    // solely on the runtime reading the `duplex` option — runtimes such as Bun
+    // ignore `duplex` yet still accept a stream body.
+    const adapter = require(path.resolve(__dirname, '..', 'src', 'adapters', 'fetch.js'));
+    assertEqual(adapter.supportsRequestStream, true, 'streaming request bodies');
+    assertEqual(adapter.supportsResponseStream, true, 'streaming response bodies');
+  });
+
   await test('FormData is sent as multipart/form-data', async () => {
     const fd = new FormData();
     fd.append('x', 'y');

@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.2] - 2026-10-10
+
+### Fixed
+- **`onUploadProgress` was silently disabled on runtimes that ignore the `duplex`
+  option** (e.g. Bun). The streaming-request-body feature check only looked at whether
+  the runtime read `duplex`; Bun ignores it but *does* support streamed request bodies,
+  so the check now also accepts a runtime that keeps the stream on `Request#body`.
+  Upload progress now fires for JSON/string, `Blob`, `File` and `FormData` bodies under
+  Bun as well as Node 18+.
+
+### Tests
+- Added upload-progress coverage for `Blob` bodies and a guard for the streaming
+  request/response feature detection (109 tests total).
+
 ## [0.1.1] - 2026-10-10
 
 ### Fixed
@@ -199,6 +213,7 @@ pipeline were reworked to match `axios` exactly; several long-standing bugs were
 - 58 interoperability tests
 - UMD + ESM bundles
 
+[0.1.2]: https://github.com/amsaid/axios-fetch/releases/tag/v0.1.2
 [0.1.1]: https://github.com/amsaid/axios-fetch/releases/tag/v0.1.1
 [0.1.0]: https://github.com/amsaid/axios-fetch/releases/tag/v0.1.0
 [0.0.8]: https://github.com/amsaid/axios-fetch/releases/tag/v0.0.8
