@@ -1,7 +1,7 @@
 /**
- * sd-axios-fetch v0.1.2
+ * sd-axios-fetch v0.1.3
  * A drop-in replacement for Axios.js built on the Fetch API.
- * (CJS / UMD bundle)  —  2026-10-10
+ * (CJS / UMD bundle)  —  2026-10-11
  */
 'use strict';
 
@@ -996,6 +996,88 @@ module.exports = formDataToJSON;
 
 };
 
+// ── src/helpers/HttpStatusCode.js ───────────────────────────────────────────
+__modules["src/helpers/HttpStatusCode.js"] = function (module, exports, require) {
+/**
+ * HttpStatusCode - HTTP status code constants, matching `axios.HttpStatusCode`.
+ *
+ * Both name→code (`HttpStatusCode.Ok === 200`) and code→name
+ * (`HttpStatusCode[200] === 'Ok'`) lookups are supported.
+ */
+const HttpStatusCode = {
+  Continue: 100,
+  SwitchingProtocols: 101,
+  Processing: 102,
+  EarlyHints: 103,
+  Ok: 200,
+  Created: 201,
+  Accepted: 202,
+  NonAuthoritativeInformation: 203,
+  NoContent: 204,
+  ResetContent: 205,
+  PartialContent: 206,
+  MultiStatus: 207,
+  AlreadyReported: 208,
+  ImUsed: 226,
+  MultipleChoices: 300,
+  MovedPermanently: 301,
+  Found: 302,
+  SeeOther: 303,
+  NotModified: 304,
+  UseProxy: 305,
+  Unused: 306,
+  TemporaryRedirect: 307,
+  PermanentRedirect: 308,
+  BadRequest: 400,
+  Unauthorized: 401,
+  PaymentRequired: 402,
+  Forbidden: 403,
+  NotFound: 404,
+  MethodNotAllowed: 405,
+  NotAcceptable: 406,
+  ProxyAuthenticationRequired: 407,
+  RequestTimeout: 408,
+  Conflict: 409,
+  Gone: 410,
+  LengthRequired: 411,
+  PreconditionFailed: 412,
+  PayloadTooLarge: 413,
+  UriTooLong: 414,
+  UnsupportedMediaType: 415,
+  RangeNotSatisfiable: 416,
+  ExpectationFailed: 417,
+  ImATeapot: 418,
+  MisdirectedRequest: 421,
+  UnprocessableEntity: 422,
+  Locked: 423,
+  FailedDependency: 424,
+  TooEarly: 425,
+  UpgradeRequired: 426,
+  PreconditionRequired: 428,
+  TooManyRequests: 429,
+  RequestHeaderFieldsTooLarge: 431,
+  UnavailableForLegalReasons: 451,
+  InternalServerError: 500,
+  NotImplemented: 501,
+  BadGateway: 502,
+  ServiceUnavailable: 503,
+  GatewayTimeout: 504,
+  HttpVersionNotSupported: 505,
+  VariantAlsoNegotiates: 506,
+  InsufficientStorage: 507,
+  LoopDetected: 508,
+  NotExtended: 510,
+  NetworkAuthenticationRequired: 511,
+};
+
+Object.entries(HttpStatusCode).forEach(([key, value]) => {
+  HttpStatusCode[value] = key;
+});
+
+module.exports = HttpStatusCode;
+
+};
+
 // ── src/core/AxiosError.js ───────────────────────────────────────────
 __modules["src/core/AxiosError.js"] = function (module, exports, require) {
 /**
@@ -1135,8 +1217,12 @@ class AxiosError extends Error {
     return !!(value && value.__CANCEL__);
   }
 
+  /**
+   * Flag-based check (matches Axios) so it keeps working when two copies of the
+   * library are loaded — e.g. the CJS and ESM bundles side by side.
+   */
   static isAxiosError(payload) {
-    return payload instanceof AxiosError;
+    return !!(payload && payload.isAxiosError === true);
   }
 }
 
@@ -1942,6 +2028,7 @@ const {
   isArrayBuffer,
   isArrayBufferView,
   isBlob,
+  isBuffer,
   isFile,
   isFileList,
   isFormData,
@@ -2014,12 +2101,14 @@ const defaults = {
       return hasJSONContentType ? JSON.stringify(formDataToJSON(data)) : data;
     }
 
-    if (isArrayBuffer(data) || isStream(data) || isFile(data) || isBlob(data) || isReadableStream(data)) {
+    if (isArrayBuffer(data) || isBuffer(data) || isStream(data) || isFile(data) || isBlob(data) || isReadableStream(data)) {
       return data;
     }
 
     if (isArrayBufferView(data)) {
-      return data.buffer;
+      // Return only this view's bytes. A Node Buffer is often a window into a
+      // larger pooled ArrayBuffer, so `data.buffer` alone would leak the pool.
+      return data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength);
     }
 
     if (isURLSearchParams(data)) {
@@ -2332,6 +2421,7 @@ const {
   isReadableStream,
   isString,
   isURLSearchParams,
+  toFiniteNumber,
 } = require("src/helpers/utils.js");
 
 // ── Polyfills for Node.js < 16 ──────────────────────────────────
@@ -2536,9 +2626,13 @@ async function fetchAdapter(config) {
     // If URL parsing fails, continue and let fetch() handle it
   }
 
-  // Validate timeout is a positive number
-  if (config.timeout !== undefined && (typeof config.timeout !== 'number' || config.timeout < 0)) {
-    throw AxiosError.badConfig('"timeout" must be a non-negative number', config);
+  // Validate / coerce timeout (axios accepts numeric strings like '30')
+  if (config.timeout != null) {
+    const timeout = toFiniteNumber(config.timeout);
+    if (timeout === null || timeout < 0) {
+      throw AxiosError.badConfig('"timeout" must be a non-negative number', config);
+    }
+    config.timeout = timeout;
   }
 
   // Validate responseType
@@ -2559,12 +2653,29 @@ async function fetchAdapter(config) {
   let data = config.data;
 
   // Build the final URL with params
-  const url = buildURL(fullPath, config.params, config.paramsSerializer);
+  let url = buildURL(fullPath, config.params, config.paramsSerializer);
+
+  // Fetch forbids credentials embedded in the URL, so lift them into Basic auth
+  // (this is what Axios' http adapter does).
+  let urlCredentials = null;
+  try {
+    const parsed = new URL(url, 'http://localhost');
+    if (parsed.username || parsed.password) {
+      urlCredentials = {
+        username: decodeURIComponent(parsed.username),
+        password: decodeURIComponent(parsed.password),
+      };
+      parsed.username = '';
+      parsed.password = '';
+      url = parsed.toString();
+    }
+  } catch (_e) { /* leave the URL untouched */ }
 
   // ── HTTP basic authentication ──────────────────────────────────────
-  if (config.auth) {
+  const auth = config.auth || urlCredentials;
+  if (auth) {
     headers.set('Authorization', 'Basic ' +
-      btoa((config.auth.username || '') + ':' + (config.auth.password ? unescape(encodeURIComponent(config.auth.password)) : '')),
+      btoa((auth.username || '') + ':' + (auth.password ? unescape(encodeURIComponent(auth.password)) : '')),
     );
   }
 
@@ -2649,14 +2760,20 @@ async function fetchAdapter(config) {
 
     const fetchOptions = buildFetchOptions(config, data, headers, withCredentials);
 
-    request = new Request(url, Object.assign(fetchOptions, {
-      signal: composedSignal,
-      method: config.method ? config.method.toUpperCase() : 'GET',
-      headers: headers.normalize().toJSON(),
-      body: data,
-      duplex: 'half',
-      credentials: 'credentials' in Request.prototype ? withCredentials : undefined,
-    }));
+    try {
+      request = new Request(url, Object.assign(fetchOptions, {
+        signal: composedSignal,
+        method: config.method ? config.method.toUpperCase() : 'GET',
+        headers: headers.normalize().toJSON(),
+        body: data,
+        duplex: 'half',
+        credentials: 'credentials' in Request.prototype ? withCredentials : undefined,
+      }));
+    } catch (requestError) {
+      // Invalid URL / headers / method / body type — a config problem, not a
+      // network failure. Give it a code instead of a bare AxiosError.
+      throw AxiosError.from(requestError, AxiosError.ERR_BAD_REQUEST, config, null);
+    }
 
     config.request = request;
 
@@ -3215,7 +3332,7 @@ module.exports = Axios;
 
 // ── src/version.js ───────────────────────────────────────────
 __modules["src/version.js"] = function (module, exports, require) {
-module.exports = "0.1.2";
+module.exports = "0.1.3";
 
 };
 
@@ -3244,6 +3361,7 @@ const AxiosHeaders = require("src/core/AxiosHeaders.js");
 const mergeConfig  = require("src/core/mergeConfig.js");
 const defaults     = require("src/core/defaults.js");
 const VERSION      = require("src/version.js");
+const HttpStatusCode = require("src/helpers/HttpStatusCode.js");
 
 // Create the default instance
 const axios = Axios.create(defaults);
@@ -3268,6 +3386,7 @@ axios.spread = Axios.spread;
 axios.toFormData = Axios.toFormData;
 axios.formToJSON = Axios.formToJSON;
 axios.VERSION = VERSION;
+axios.HttpStatusCode = HttpStatusCode;
 
 module.exports = axios;
 

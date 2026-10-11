@@ -33,6 +33,7 @@ const files = [
   'src/helpers/composeSignals.js',
   'src/helpers/toFormData.js',
   'src/helpers/formDataToJSON.js',
+  'src/helpers/HttpStatusCode.js',
   'src/core/AxiosError.js',
   'src/core/AxiosHeaders.js',
   'src/core/CanceledError.js',
@@ -173,7 +174,7 @@ function __require(id) {
 
     code += `const __entry = __require(${JSON.stringify('src/index.js')});\n`;
     code += `export default __entry;\n`;
-    code += `export const { Axios, AxiosError, AxiosHeaders, CanceledError, CancelToken, mergeConfig, all, spread, isCancel, isAxiosError, toFormData, formToJSON, VERSION } = __entry;\n`;
+    code += `export const { Axios, AxiosError, AxiosHeaders, CanceledError, CancelToken, mergeConfig, all, spread, isCancel, isAxiosError, toFormData, formToJSON, VERSION, HttpStatusCode } = __entry;\n`;
   }
 
   return code;
@@ -222,3 +223,14 @@ console.log('✓  dist/sd-axios-fetch.js  (CJS/UMD)  — ' + (Buffer.byteLength(
 const esmBundle = buildBundle('esm');
 writeFileSync(join(root, 'dist', 'sd-axios-fetch.mjs'), esmBundle, 'utf-8');
 console.log('✓  dist/sd-axios-fetch.mjs (ESM)      — ' + (Buffer.byteLength(esmBundle) / 1024).toFixed(1) + ' KB');
+
+// ── ESM-flavoured type declarations ────────────────────────────────
+// The package has no `"type": "module"`, so `*.d.ts` is treated as CommonJS.
+// The `import` condition needs an ESM-format declaration file (`.d.mts`) or
+// `import axios from 'sd-axios-fetch'` resolves to the module namespace under
+// `moduleResolution: node16`/`nodenext` (i.e. `axios.get` does not exist).
+const dts = join(root, 'dist', 'sd-axios-fetch.d.ts');
+if (existsSync(dts)) {
+  writeFileSync(join(root, 'dist', 'sd-axios-fetch.d.mts'), readFileSync(dts, 'utf-8'), 'utf-8');
+  console.log('✓  dist/sd-axios-fetch.d.mts (ESM types)');
+}

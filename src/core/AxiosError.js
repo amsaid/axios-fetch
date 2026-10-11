@@ -137,8 +137,12 @@ class AxiosError extends Error {
     return !!(value && value.__CANCEL__);
   }
 
+  /**
+   * Flag-based check (matches Axios) so it keeps working when two copies of the
+   * library are loaded — e.g. the CJS and ESM bundles side by side.
+   */
   static isAxiosError(payload) {
-    return payload instanceof AxiosError;
+    return !!(payload && payload.isAxiosError === true);
   }
 }
 

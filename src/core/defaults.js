@@ -11,6 +11,7 @@ const {
   isArrayBuffer,
   isArrayBufferView,
   isBlob,
+  isBuffer,
   isFile,
   isFileList,
   isFormData,
@@ -83,12 +84,14 @@ const defaults = {
       return hasJSONContentType ? JSON.stringify(formDataToJSON(data)) : data;
     }
 
-    if (isArrayBuffer(data) || isStream(data) || isFile(data) || isBlob(data) || isReadableStream(data)) {
+    if (isArrayBuffer(data) || isBuffer(data) || isStream(data) || isFile(data) || isBlob(data) || isReadableStream(data)) {
       return data;
     }
 
     if (isArrayBufferView(data)) {
-      return data.buffer;
+      // Return only this view's bytes. A Node Buffer is often a window into a
+      // larger pooled ArrayBuffer, so `data.buffer` alone would leak the pool.
+      return data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength);
     }
 
     if (isURLSearchParams(data)) {

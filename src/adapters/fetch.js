@@ -38,6 +38,7 @@ const {
   isReadableStream,
   isString,
   isURLSearchParams,
+  toFiniteNumber,
 } = require('../helpers/utils');
 
 // ── Polyfills for Node.js < 16 ──────────────────────────────────
@@ -242,9 +243,13 @@ async function fetchAdapter(config) {
     // If URL parsing fails, continue and let fetch() handle it
   }
 
-  // Validate timeout is a positive number
-  if (config.timeout !== undefined && (typeof config.timeout !== 'number' || config.timeout < 0)) {
-    throw AxiosError.badConfig('"timeout" must be a non-negative number', config);
+  // Validate / coerce timeout (axios accepts numeric strings like '30')
+  if (config.timeout != null) {
+    const timeout = toFiniteNumber(config.timeout);
+    if (timeout === null || timeout < 0) {
+      throw AxiosError.badConfig('"timeout" must be a non-negative number', config);
+    }
+    config.timeout = timeout;
   }
 
   // Validate responseType
@@ -265,12 +270,29 @@ async function fetchAdapter(config) {
   let data = config.data;
 
   // Build the final URL with params
-  const url = buildURL(fullPath, config.params, config.paramsSerializer);
+  let url = buildURL(fullPath, config.params, config.paramsSerializer);
+
+  // Fetch forbids credentials embedded in the URL, so lift them into Basic auth
+  // (this is what Axios' http adapter does).
+  let urlCredentials = null;
+  try {
+    const parsed = new URL(url, 'http://localhost');
+    if (parsed.username || parsed.password) {
+      urlCredentials = {
+        username: decodeURIComponent(parsed.username),
+        password: decodeURIComponent(parsed.password),
+      };
+      parsed.username = '';
+      parsed.password = '';
+      url = parsed.toString();
+    }
+  } catch (_e) { /* leave the URL untouched */ }
 
   // ── HTTP basic authentication ──────────────────────────────────────
-  if (config.auth) {
+  const auth = config.auth || urlCredentials;
+  if (auth) {
     headers.set('Authorization', 'Basic ' +
-      btoa((config.auth.username || '') + ':' + (config.auth.password ? unescape(encodeURIComponent(config.auth.password)) : '')),
+      btoa((auth.username || '') + ':' + (auth.password ? unescape(encodeURIComponent(auth.password)) : '')),
     );
   }
 
@@ -355,14 +377,20 @@ async function fetchAdapter(config) {
 
     const fetchOptions = buildFetchOptions(config, data, headers, withCredentials);
 
-    request = new Request(url, Object.assign(fetchOptions, {
-      signal: composedSignal,
-      method: config.method ? config.method.toUpperCase() : 'GET',
-      headers: headers.normalize().toJSON(),
-      body: data,
-      duplex: 'half',
-      credentials: 'credentials' in Request.prototype ? withCredentials : undefined,
-    }));
+    try {
+      request = new Request(url, Object.assign(fetchOptions, {
+        signal: composedSignal,
+        method: config.method ? config.method.toUpperCase() : 'GET',
+        headers: headers.normalize().toJSON(),
+        body: data,
+        duplex: 'half',
+        credentials: 'credentials' in Request.prototype ? withCredentials : undefined,
+      }));
+    } catch (requestError) {
+      // Invalid URL / headers / method / body type — a config problem, not a
+      // network failure. Give it a code instead of a bare AxiosError.
+      throw AxiosError.from(requestError, AxiosError.ERR_BAD_REQUEST, config, null);
+    }
 
     config.request = request;
 

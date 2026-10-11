@@ -7,7 +7,7 @@ A zero-dependency, drop-in replacement for **[Axios](https://github.com/axios/ax
 - **~96 KB** single-file bundle (UMD + ESM, unminified)
 - **Zero dependencies** — uses only native `fetch`, `AbortController`, `Request`, `Headers`, `ReadableStream`
 - **Axios 1.x API compatible** — `request`, `get`, `post`, `put`, `patch`, `delete`, `head`, `options`, `postForm`/`putForm`/`patchForm`, `create`, interceptors, `AxiosHeaders`, `CancelToken`, `AbortController`, `all`/`spread`, transforms, timeout, progress, `mergeConfig`, `toFormData`/`formToJSON`
-- **109 passing interoperability tests**
+- **116 passing interoperability tests**
 - **Real-time progress tracking** — upload and download progress via `ReadableStream`
 - **TypeScript types** included (`dist/sd-axios-fetch.d.ts`, strict-mode clean)
 
@@ -300,6 +300,7 @@ fn([1, 2]);  // → 3
 | `axios.AxiosError` | Error class + error-code constants |
 | `axios.AxiosHeaders` | Header container class |
 | `axios.CancelToken` / `axios.CanceledError` / `axios.Cancel` | Cancellation |
+| `axios.HttpStatusCode` | HTTP status code constants (name→code and code→name) |
 | `axios.VERSION` | Library version |
 
 ---
@@ -407,6 +408,10 @@ Still intentionally different from upstream Axios:
 ### Streaming
 
 - `responseType: 'stream'` returns a **web `ReadableStream`** (what the Fetch API provides), not a Node.js `stream.Readable`.
+
+### Dual-package / `instanceof`
+
+- The package ships separate CJS and ESM bundles. If both are loaded in one process, `instanceof AxiosError` (and `instanceof AxiosHeaders`) will not match across the boundary. `axios.isAxiosError()` / `axios.isCancel()` are flag-based and **do** work across it. Prefer the predicates over `instanceof`.
 
 ---
 

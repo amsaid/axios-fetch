@@ -1419,6 +1419,69 @@ async function run() {
   });
 
   // ═══════════════════════════════════════════════════════════════
+  // 23. Regression fixes (0.1.3)
+  // ═══════════════════════════════════════════════════════════════
+  console.log('\n── Regression Fixes ─────────────────────────────');
+
+  await test('Buffer uploads send only the buffer bytes', async () => {
+    const buf = Buffer.from('hello world!');
+    // Buffer.from() usually returns a window into the shared 8KB pool — the
+    // regression sent `buf.buffer` (the whole pool) instead of the 12 bytes.
+    assert(buf.buffer.byteLength > buf.length, 'expected a pooled buffer');
+    const res = await axios.post(`${local.base}/echo`, buf);
+    assertEqual(res.data.body, 'hello world!', 'server must receive exactly 12 bytes');
+  });
+
+  await test('ArrayBufferView uploads send only the view slice', async () => {
+    const backing = new Uint8Array([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
+    const view = backing.subarray(3, 6); // bytes [3,4,5]
+    const res = await axios.post(`${local.base}/echo`, view);
+    assertEqual(res.data.body.length, 3, 'only the 3-byte slice should be sent');
+  });
+
+  await test('URL credentials are converted to Basic auth', async () => {
+    const port = local.server.address().port;
+    const res = await axios.get(`http://user:pass@127.0.0.1:${port}/echo`);
+    assertEqual(res.data.authorization, 'Basic ' + Buffer.from('user:pass').toString('base64'));
+  });
+
+  await test('numeric-string timeout is accepted', async () => {
+    const res = await axios.get(`${local.base}/json`, { timeout: '5000' });
+    assertEqual(res.status, 200);
+    assertEqual(res.config.timeout, 5000);
+  });
+
+  await test('invalid Request construction gets an error code', async () => {
+    // An invalid HTTP method cannot be turned into a Request.
+    try {
+      await axios.request({ url: `${local.base}/json`, method: 'BAD METHOD' });
+      assert(false, 'should have thrown');
+    } catch (err) {
+      assert(axios.isAxiosError(err));
+      assert(typeof err.code === 'string', 'error should carry a code');
+    }
+  });
+
+  await test('isAxiosError works across the CJS and ESM copies', async () => {
+    const esm = await import(path.resolve(__dirname, '..', 'dist', 'sd-axios-fetch.mjs'));
+    try {
+      await axios.get(`${local.base}/nope`);
+      assert(false, 'should have thrown');
+    } catch (err) {
+      assert(esm.isAxiosError(err), 'ESM isAxiosError must recognise a CJS AxiosError');
+      assert(esm.default.isAxiosError(err));
+      assert(axios.isAxiosError(err));
+    }
+  });
+
+  await test('HttpStatusCode constants are exposed', () => {
+    assertEqual(axios.HttpStatusCode.Ok, 200);
+    assertEqual(axios.HttpStatusCode.NotFound, 404);
+    assertEqual(axios.HttpStatusCode.InternalServerError, 500);
+    assertEqual(axios.HttpStatusCode[404], 'NotFound');
+  });
+
+  // ═══════════════════════════════════════════════════════════════
   // Summary
   // ═══════════════════════════════════════════════════════════════
   local.server && local.server.close();

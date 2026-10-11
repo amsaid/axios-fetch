@@ -1,6 +1,6 @@
 {
   "name": "sd-axios-fetch",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "A zero-dependency, drop-in replacement for Axios.js built entirely on the native Fetch API. Full API compatibility with modern web standards.",
   "main": "dist/sd-axios-fetch.js",
   "module": "dist/sd-axios-fetch.mjs",
@@ -8,7 +8,7 @@
   "exports": {
     ".": {
       "import": {
-        "types": "./dist/sd-axios-fetch.d.ts",
+        "types": "./dist/sd-axios-fetch.d.mts",
         "default": "./dist/sd-axios-fetch.mjs"
       },
       "require": {

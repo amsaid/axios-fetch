@@ -6,6 +6,30 @@
  * without type changes. Fetch-specific extras are additive.
  */
 
+// ── DOM-lib-free primitives ──────────────────────────────────────
+// Declared locally so the package type-checks in Node-only projects that do
+// not include the `dom` lib. When `dom` *is* present these module-local names
+// shadow the globals and stay structurally compatible.
+
+export type RequestCache =
+  | 'default' | 'no-store' | 'reload' | 'no-cache' | 'force-cache' | 'only-if-cached';
+
+export type RequestMode = 'navigate' | 'same-origin' | 'no-cors' | 'cors';
+
+export type ReferrerPolicy =
+  | '' | 'no-referrer' | 'no-referrer-when-downgrade' | 'origin'
+  | 'origin-when-cross-origin' | 'same-origin' | 'strict-origin'
+  | 'strict-origin-when-cross-origin' | 'unsafe-url';
+
+export interface ProgressEvent<T = any> {
+  lengthComputable: boolean;
+  loaded: number;
+  total: number;
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export type HTMLFormElement = any;
+
 // ── Headers ──────────────────────────────────────────────────────
 
 export type AxiosHeaderValue = AxiosHeaders | string | string[] | number | boolean | null;
@@ -297,8 +321,8 @@ export class AxiosError<T = unknown, D = any> extends Error {
   static badStatus(status: number, statusText: string, config: InternalAxiosRequestConfig, request: any, response: AxiosResponse): AxiosError;
   static badConfig(message: string, config?: InternalAxiosRequestConfig): AxiosError;
   static fromError(error: Error | unknown, config?: InternalAxiosRequestConfig, request?: any, response?: AxiosResponse, code?: string): AxiosError;
-  static isCancel(value: any): boolean;
-  static isAxiosError(payload: any): boolean;
+  static isCancel(value: any): value is Cancel;
+  static isAxiosError(payload: any): payload is AxiosError;
 
   static readonly ERR_BAD_OPTION_VALUE: 'ERR_BAD_OPTION_VALUE';
   static readonly ERR_BAD_OPTION: 'ERR_BAD_OPTION';
@@ -398,8 +422,8 @@ export class Axios {
 
   static all<T>(promises: Array<T | Promise<T>>): Promise<Awaited<T>[]>;
   static spread<T, R>(callback: (...args: T[]) => R): (array: T[]) => R;
-  static isCancel(value: any): boolean;
-  static isAxiosError(payload: any): boolean;
+  static isCancel(value: any): value is Cancel;
+  static isAxiosError(payload: any): payload is AxiosError;
   static toFormData(source: any, formData?: FormData, options?: FormSerializerOptions): FormData;
   static formToJSON(formData: FormData | HTMLFormElement): Record<string, any>;
   static create(config?: CreateAxiosDefaults): AxiosInstance;
@@ -428,15 +452,84 @@ export interface AxiosStatic extends AxiosInstance {
   Cancel: typeof CanceledError;
   CancelToken: CancelTokenStatic;
   VERSION: string;
-  isCancel(value: any): boolean;
-  isAxiosError(payload: any): boolean;
+  isCancel(value: any): value is Cancel;
+  isAxiosError(payload: any): payload is AxiosError;
   all<T>(promises: Array<T | Promise<T>>): Promise<Awaited<T>[]>;
   spread<T, R>(callback: (...args: T[]) => R): (array: T[]) => R;
   toFormData(source: any, formData?: FormData, options?: FormSerializerOptions): FormData;
   formToJSON(formData: FormData | HTMLFormElement): Record<string, any>;
   mergeConfig(config1: AxiosRequestConfig, config2?: AxiosRequestConfig): AxiosRequestConfig;
+  HttpStatusCode: typeof HttpStatusCode;
   // ESM default-export compatibility
   default: AxiosStatic;
+}
+
+// ── HTTP status codes ────────────────────────────────────────────
+
+export enum HttpStatusCode {
+  Continue = 100,
+  SwitchingProtocols = 101,
+  Processing = 102,
+  EarlyHints = 103,
+  Ok = 200,
+  Created = 201,
+  Accepted = 202,
+  NonAuthoritativeInformation = 203,
+  NoContent = 204,
+  ResetContent = 205,
+  PartialContent = 206,
+  MultiStatus = 207,
+  AlreadyReported = 208,
+  ImUsed = 226,
+  MultipleChoices = 300,
+  MovedPermanently = 301,
+  Found = 302,
+  SeeOther = 303,
+  NotModified = 304,
+  UseProxy = 305,
+  Unused = 306,
+  TemporaryRedirect = 307,
+  PermanentRedirect = 308,
+  BadRequest = 400,
+  Unauthorized = 401,
+  PaymentRequired = 402,
+  Forbidden = 403,
+  NotFound = 404,
+  MethodNotAllowed = 405,
+  NotAcceptable = 406,
+  ProxyAuthenticationRequired = 407,
+  RequestTimeout = 408,
+  Conflict = 409,
+  Gone = 410,
+  LengthRequired = 411,
+  PreconditionFailed = 412,
+  PayloadTooLarge = 413,
+  UriTooLong = 414,
+  UnsupportedMediaType = 415,
+  RangeNotSatisfiable = 416,
+  ExpectationFailed = 417,
+  ImATeapot = 418,
+  MisdirectedRequest = 421,
+  UnprocessableEntity = 422,
+  Locked = 423,
+  FailedDependency = 424,
+  TooEarly = 425,
+  UpgradeRequired = 426,
+  PreconditionRequired = 428,
+  TooManyRequests = 429,
+  RequestHeaderFieldsTooLarge = 431,
+  UnavailableForLegalReasons = 451,
+  InternalServerError = 500,
+  NotImplemented = 501,
+  BadGateway = 502,
+  ServiceUnavailable = 503,
+  GatewayTimeout = 504,
+  HttpVersionNotSupported = 505,
+  VariantAlsoNegotiates = 506,
+  InsufficientStorage = 507,
+  LoopDetected = 508,
+  NotExtended = 510,
+  NetworkAuthenticationRequired = 511,
 }
 
 declare const axios: AxiosStatic;
@@ -444,8 +537,8 @@ export default axios;
 
 // ── Named exports / utility functions ────────────────────────────
 
-export function isCancel(value: any): boolean;
-export function isAxiosError(payload: any): boolean;
+export function isCancel(value: any): value is Cancel;
+export function isAxiosError(payload: any): payload is AxiosError;
 export function all<T>(promises: Array<T | Promise<T>>): Promise<Awaited<T>[]>;
 export function spread<T, R>(callback: (...args: T[]) => R): (array: T[]) => R;
 export function toFormData(source: any, formData?: FormData, options?: FormSerializerOptions): FormData;

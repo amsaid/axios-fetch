@@ -23,6 +23,7 @@ const AxiosHeaders = require('./core/AxiosHeaders');
 const mergeConfig  = require('./core/mergeConfig');
 const defaults     = require('./core/defaults');
 const VERSION      = require('./version');
+const HttpStatusCode = require('./helpers/HttpStatusCode');
 
 // Create the default instance
 const axios = Axios.create(defaults);
@@ -47,5 +48,6 @@ axios.spread = Axios.spread;
 axios.toFormData = Axios.toFormData;
 axios.formToJSON = Axios.formToJSON;
 axios.VERSION = VERSION;
+axios.HttpStatusCode = HttpStatusCode;
 
 module.exports = axios;

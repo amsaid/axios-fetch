@@ -5,6 +5,43 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.3] - 2026-10-11
+
+Fixes for issues found while running an adapted axios test suite against the
+package.
+
+### Fixed
+- **Buffer uploads were corrupted** — a `Buffer` was passed through the
+  `isArrayBufferView` branch and sent as its *entire backing ArrayBuffer* (the
+  shared 8 KB Node pool) instead of the buffer's bytes. `Buffer`s are now passed
+  through untouched, and other `ArrayBufferView`s are sliced to their own
+  `byteOffset`/`byteLength`. (Previously: 12-byte buffer → 8192 bytes sent.)
+- **ESM default import was untypable** — `import axios from 'sd-axios-fetch'`
+  failed under `moduleResolution: node16`/`nodenext` because the shared `.d.ts`
+  is CommonJS-format. The package now ships `dist/sd-axios-fetch.d.mts` for the
+  `import` condition.
+- **Type declarations required the DOM lib** — `ProgressEvent`, `RequestCache`,
+  `RequestMode`, `ReferrerPolicy` and `HTMLFormElement` are now declared
+  locally, so Node-only TypeScript projects compile without `lib: ["dom"]`.
+- **`isAxiosError` is now flag-based** (like axios) instead of `instanceof`, so
+  it keeps working when the CJS and ESM bundles are loaded in the same process.
+- **URL credentials** (`https://user:pass@host/`) are lifted into Basic auth
+  instead of throwing "Request cannot be constructed from a URL that includes
+  credentials".
+- **`new Request()` failures** (invalid method/URL/headers) now carry an
+  `ERR_BAD_REQUEST` code instead of a bare `AxiosError`.
+- **`timeout` accepts numeric strings** (`'30'` → `30`) instead of rejecting.
+
+### Added
+- `axios.HttpStatusCode` (`axios.HttpStatusCode.NotFound === 404`, plus reverse
+  lookups) — matches axios.
+- `isCancel` / `isAxiosError` are now TypeScript **type predicates**.
+
+### Tests
+- Added regression coverage: Buffer/`ArrayBufferView` uploads, URL credentials,
+  numeric-string timeout, `Request`-construction error codes, cross-bundle
+  `isAxiosError`, and `HttpStatusCode` (116 tests total).
+
 ## [0.1.2] - 2026-10-10
 
 ### Fixed
@@ -213,6 +250,7 @@ pipeline were reworked to match `axios` exactly; several long-standing bugs were
 - 58 interoperability tests
 - UMD + ESM bundles
 
+[0.1.3]: https://github.com/amsaid/axios-fetch/releases/tag/v0.1.3
 [0.1.2]: https://github.com/amsaid/axios-fetch/releases/tag/v0.1.2
 [0.1.1]: https://github.com/amsaid/axios-fetch/releases/tag/v0.1.1
 [0.1.0]: https://github.com/amsaid/axios-fetch/releases/tag/v0.1.0
